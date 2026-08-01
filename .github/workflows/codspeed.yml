@@ -181,12 +181,43 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build upstream's example against our vendored library
+    # Upstream's example recorded fine (`example_benchmark`, 211.8 ms) while the
+    # Haskell suite records nothing, so custom integrations work here and the
+    # difference is ours. The most visible one is the URI: a bare name versus
+    # bench/Example.hs::fib::1000::leaky.
+    #
+    # One C program, several URI shapes, one round-trip. Whichever shapes come
+    # back name the constraint.
+    - name: Build a URI-shape probe
       run: |
         mkdir -p /tmp/ex && cd /tmp/ex
-        curl -fsSL -o main.c \
-          https://raw.githubusercontent.com/CodSpeedHQ/instrument-hooks/main/example/main.c
-        gcc -O1 -o example main.c \
+        cat > probe.c <<'EOF'
+        #include <stdio.h>
+        #include "core.h"
+        static volatile long sink;
+        static void work(int n){ for (long i=0;i<n*100000L;i++) sink += i; }
+        static const char *uris[] = {
+          "bare_name",
+          "prefix::name",
+          "bench/Example.hs::one",
+          "bench/Example.hs::fib::1000::leaky",
+          "noext/path::two",
+        };
+        int main(void){
+          InstrumentHooks *h = instrument_hooks_init();
+          for (unsigned k = 0; k < sizeof uris / sizeof *uris; k++) {
+            instrument_hooks_start_benchmark_inline(h);
+            work(k + 1);
+            instrument_hooks_stop_benchmark_inline(h);
+            instrument_hooks_set_executed_benchmark(h, 1234, uris[k]);
+          }
+          /* last, per the ordering fix */
+          instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
+          instrument_hooks_deinit(h);
+          return 0;
+        }
+        EOF
+        gcc -O1 -o example probe.c \
           "$GITHUB_WORKSPACE/vendor/instrument-hooks/cbits/core.c" \
           -I"$GITHUB_WORKSPACE/vendor/instrument-hooks/includes" \
           -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-parameter \
