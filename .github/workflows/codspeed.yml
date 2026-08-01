@@ -206,16 +206,27 @@ jobs:
   # 288,719,342 Ir. Nothing anywhere reports which requirement was missed.
   #
   # `control` stays as a standing positive control: if a Haskell run records
-  # nothing, this says whether the pipeline itself was working that day. The
+  # nothing, this says whether the pipeline itself was working that day. Fixed
   # mutations are kept in the case block, unused, because re-deriving them cost
   # four rounds.
+  #
+  # Fixing all four made the Haskell profile structurally identical to the
+  # accepted one -- metadata first, a root frame per benchmark parenting 99% of
+  # its part, marker frames, no environment json, non-zero totals throughout --
+  # and it still recorded nothing. Two differences from the C control survive,
+  # and these are them:
+  #
+  #   multi      three benchmarks in one process, as any real suite has; the C
+  #              control has exactly one, and no probe has ever had more
+  #   uri_colon  a single-colon URI. probe_uri_bare (no colon) and a `::` path
+  #              both recorded, but `example:All.fib.1000.leaky` is neither
   upstream-example:
     name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        variant: [control]
+        variant: [control, multi, uri_colon]
     permissions:
       contents: read
       id-token: write
@@ -239,6 +250,15 @@ jobs:
         SETINT='instrument_hooks_set_integration(hooks, "custom-integration", "1.0.0");'
         case "$VARIANT" in
           control) ;;
+          uri_colon)
+            sed -i 's|"probe_uri_colon"|"probe_uri_colon:All.fib.1000.leaky"|' main.c ;;
+          multi)
+            # Wraps the measured region -- start_benchmark through
+            # set_executed_benchmark -- in a loop, so it is three benchmarks on
+            # one session in one process, the way a real suite reports.
+            sed -i 's|^  printf("Starting benchmark\.\.\.\\n");|  for (int b = 0; b < 3; b++) {\n  char uribuf[64];\n  snprintf(uribuf, sizeof uribuf, "probe_multi_%d", b);\n  printf("Starting benchmark...\\n");|' main.c
+            sed -i 's|"probe_multi") != 0) {|uribuf) != 0) {|' main.c
+            sed -i 's|^  printf("Benchmark completed successfully\\n");|  }\n  printf("Benchmark completed successfully\\n");|' main.c ;;
           meta_last)
             # Only the final deinit is at two-space indent; the error paths are
             # at four, so this anchors on the successful exit.
