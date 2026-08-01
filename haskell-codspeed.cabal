@@ -81,6 +81,7 @@ library
   hs-source-dirs: src
   -- cabal-gild: discover src --exclude=src/**/Internal.hs
   exposed-modules:
+    CodSpeed.Callgrind.Demangle
     CodSpeed.Instrument
     CodSpeed.Instrument.Raw
     CodSpeed.Instrument.RootFrame
@@ -114,6 +115,21 @@ executable codspeed-hs-compare
   hs-source-dirs: app
   main-is: Compare.hs
   build-depends: haskell-codspeed
+
+-- Rewrites the z-encoded GHC symbols in a Callgrind profile into Haskell names,
+-- so CodSpeed's flamegraph frames are legible. Chain it onto the measured
+-- command: `codspeed run -- bash -c './bench && codspeed-hs-rewrite'`.
+executable codspeed-hs-rewrite
+  import: defaults
+  hs-source-dirs: app
+  main-is: Rewrite.hs
+  -- ByteString because this runs inside the Valgrind-traced command, at roughly
+  -- 200x native, over a profile that is comfortably hundreds of kilobytes.
+  build-depends:
+    bytestring,
+    directory,
+    filepath,
+    haskell-codspeed,
 
 -- The tasty-bench glue is a separate component so the core library stays free of
 -- a tasty dependency; a project driving CodSpeed from its own harness needs only
@@ -179,6 +195,7 @@ test-suite haskell-codspeed-test
     BenchEncodingSpec
     CCSSpec
     ConfigSpec
+    DemangleSpec
     InstrumentSpec
     PreflightSpec
     SidecarSpec

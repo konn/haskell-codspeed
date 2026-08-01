@@ -3,6 +3,7 @@ module Main (main) where
 import BenchEncodingSpec qualified
 import CCSSpec qualified
 import ConfigSpec qualified
+import DemangleSpec qualified
 import InstrumentSpec qualified
 import PreflightSpec qualified
 import SidecarSpec qualified
@@ -41,10 +42,11 @@ main = do
           , InstrumentSpec.test_sessionWithoutRunner
           , InstrumentSpec.test_rootFrame
           ]
+      , testGroup "ConfigSpec" [ConfigSpec.test_integrationVersion]
+      , testGroup "DemangleSpec" [DemangleSpec.test_demangle]
       , testGroup
           "StatsSpec"
-          [ ConfigSpec.test_integrationVersion
-          , StatsSpec.test_gcStatsAvailable
+          [ StatsSpec.test_gcStatsAvailable
           , StatsSpec.test_allocationIsObserved
           , StatsSpec.test_allocationAcrossThreads
           , StatsSpec.test_allocationFloor

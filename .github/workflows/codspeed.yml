@@ -55,13 +55,24 @@ jobs:
         cabal update
         cabal build bench:example
 
-    - name: Locate the binary
+    - name: Locate the binaries
       id: bin
-      run: echo "path=$(cabal list-bin bench:example)" >>"$GITHUB_OUTPUT"
+      run: |
+        {
+          echo "path=$(cabal list-bin bench:example)"
+          echo "rewrite=$(cabal list-bin codspeed-hs-rewrite)"
+        } >>"$GITHUB_OUTPUT"
 
     # Simulation rather than walltime: it is deterministic, and a GitHub-hosted
     # runner is too noisy for walltime to mean much. Note this makes the run
     # roughly 200x slower than native, which is fine for a suite this size.
+    #
+    # The rewrite step is chained onto the measured command rather than run
+    # afterwards, and it has to be. Callgrind writes the profile when the
+    # benchmark process exits, and the runner tars and uploads the folder when
+    # the whole command returns -- so between those two moments is the only
+    # window in which the file exists and is still ours. It runs under Valgrind
+    # too, which is why it is ByteString and does one pass.
     - name: Run benchmarks
       uses: CodSpeedHQ/action@v5
       env:
@@ -70,7 +81,7 @@ jobs:
         CODSPEED_HS_SIDECAR: ${{github.workspace}}/allocation.csv
       with:
         mode: simulation
-        run: ${{steps.bin.outputs.path}}
+        run: ${{steps.bin.outputs.path}} && ${{steps.bin.outputs.rewrite}}
 
     # The sidecar is measured under the instrument, on the code path no local run
     # exercises, so it needs checking there. It shipped broken: the root frame
