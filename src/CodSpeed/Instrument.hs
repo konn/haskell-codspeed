@@ -141,6 +141,12 @@ remain distinct strings, and this one identifies an integration in a UI rather
 than resolving dependencies, so that seemed the better trade than claiming
 instability.
 
+@0.1.0+pvp.0@ is accepted: this package's own suite records all eight benchmarks
+with it. Which incidentally settles what the backend does with this field — it
+parses semver properly rather than matching @x.y.z@, since build metadata
+survives. A @-pvp.D@ pre-release would therefore very likely be accepted too; the
+choice between them is the semantic one above, not a compatibility one.
+
 == Edge cases
 
 A version already the shape of a semver core is left alone, rather than growing
