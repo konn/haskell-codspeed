@@ -170,6 +170,29 @@ data Config = Config
   probe's legs shared one CodSpeed run part and overwrote each other, so its
   profile was never read. See @README.md@ on @GH_MATRIX@.)
   -}
+  , configDeterministic :: Maybe Bool
+  {- ^ Take the one-iteration path even when no CodSpeed runner is attached.
+
+  'Nothing' takes @$CODSPEED_HS_DETERMINISTIC@ (any value but @0@), else off —
+  so by default this behaves exactly like @tasty-bench@ locally and switches only
+  under the runner, which is detected via @instrument_hooks_is_instrumented@.
+
+  What it is for is the side-car. A @-fprof-late@ profiling run has no runner, so
+  it falls through to @tasty-bench@'s adaptive loop and runs the body however
+  many times convergence demands — a count that varies with machine speed and
+  load. That is fine for a profile you read yourself, and wrong for one that is
+  going to be compared against a measured run: the body scales with the iteration
+  count but the per-measurement harness does not, so the /shape/ shifts.
+
+  Turning this on makes the side-car do exactly what the instrumented run does —
+  body once, per-leaf — so the two are comparable, and cheap checks become
+  possible that otherwise are not: run it twice and the folded output should be
+  byte-identical, and its allocation should match the measured run's modulo the
+  two words @-prof@ adds to every heap object.
+
+  It also forces @-j1@, since one-iteration measurement of allocation is
+  meaningless if benchmarks overlap.
+  -}
   , configSidecarPath :: Maybe FilePath
   {- ^ Where to write per-benchmark allocation, if anywhere.
 
@@ -257,6 +280,7 @@ defaultConfig =
           , integrationVersion = CS.pvpToSemver version
           }
     , configComponent = Nothing
+    , configDeterministic = Nothing
     , configRootFrame = True
     , configSidecarPath = Nothing
     , configCCSDir = Nothing
@@ -271,6 +295,8 @@ lifetime.
 -}
 data RunnerState = RunnerState
   { stateSession :: !Session
+  , stateDeterministic :: !Bool
+  -- ^ Take the one-iteration path even with no runner attached. See 'Config'.
   , stateRootFrame :: !Bool
   , stateEventlog :: !Bool
   {- ^ Resolved once, because 'CodSpeed.RTS.Eventlog.eventlogEnabled' reads RTS
@@ -311,7 +337,10 @@ instance IsTest CodSpeedBench where
     -- region covers tasty-bench's whole adaptive loop, which is what you want.
     withCCS mstate uri $ EL.withRegion (maybe False stateEventlog mstate) uri $ case mstate of
       Just st
-        | isInstrumented (stateSession st) ->
+        -- stateDeterministic takes the same path with no runner attached, which
+        -- is what makes a -fprof-late side-car comparable to a measured run
+        -- rather than merely similar. See 'configDeterministic'.
+        | isInstrumented (stateSession st) || stateDeterministic st ->
             case lookupOption opts of
               NumThreads 1 -> measurePayload st opts uri payload
               _ ->
@@ -510,7 +539,8 @@ defaultMainWith cfg benchmarks =
   withSession (configIntegration cfg) $ \sess -> do
     _ <- preflight (sessionMode sess)
     component <- resolveComponent (configComponent cfg)
-    announce sess (configIntegration cfg) component
+    deterministic <- resolveDeterministic (configDeterministic cfg)
+    announce sess (configIntegration cfg) deterministic component
     reportBuildEnvironment sess
     installSignalHandlers
 
@@ -530,7 +560,7 @@ defaultMainWith cfg benchmarks =
     sidecarPath <- resolveSidecarPath (configSidecarPath cfg)
     ccsDir <- resolveEnvPath "CODSPEED_HS_CCS_DIR" (configCCSDir cfg)
     bracket_
-      (writeIORef runnerRef (Just (RunnerState sess (configRootFrame cfg) evOn sidecarRef ccsDir)))
+      (writeIORef runnerRef (Just (RunnerState sess deterministic (configRootFrame cfg) evOn sidecarRef ccsDir)))
       -- tasty signals its result by throwing ExitCode, so the teardown of a
       -- bracket is the only place the sidecar can reliably be written.
       (flushSidecar sidecarPath sidecarRef >> writeIORef runnerRef Nothing)
@@ -551,8 +581,15 @@ Printing the component too, since a wrong one is the other quiet failure: the
 benchmarks are reported, just under names that do not match the baseline, so
 every one of them looks new.
 -}
-announce :: Session -> Integration -> String -> IO ()
-announce sess integration component
+announce :: Session -> Integration -> Bool -> String -> IO ()
+announce sess integration deterministic component
+  | not (isInstrumented sess) && deterministic =
+      hPutStrLn stderr $
+        "[codspeed] NOT measuring, but taking the one-iteration path anyway "
+          <> "(CODSPEED_HS_DETERMINISTIC): each benchmark body runs exactly once, "
+          <> "as it would under the runner. Nothing is reported to CodSpeed. "
+          <> "Times here are one unaveraged sample and mean little; allocation is "
+          <> "exact."
   | isInstrumented sess =
       hPutStrLn stderr $
         "[codspeed] measuring: component="
@@ -590,6 +627,19 @@ announce sess integration component
             <> "\" rather than \"haskell-codspeed\", because CodSpeed only builds a "
             <> "flamegraph for integration names it knows. Set configIntegration to "
             <> "change it."
+
+{- | @configDeterministic@, else @$CODSPEED_HS_DETERMINISTIC@, else off.
+
+Any value counts as on except @0@ and the empty string, so
+@CODSPEED_HS_DETERMINISTIC=1@ and @=yes@ both work and @=0@ does not.
+-}
+resolveDeterministic :: Maybe Bool -> IO Bool
+resolveDeterministic (Just b) = pure b
+resolveDeterministic Nothing = do
+  raw <- lookupEnv "CODSPEED_HS_DETERMINISTIC"
+  pure $ case raw of
+    Just v -> v /= "" && v /= "0"
+    Nothing -> False
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)

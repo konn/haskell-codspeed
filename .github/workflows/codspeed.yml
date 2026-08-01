@@ -491,6 +491,16 @@ jobs:
     - name: Collect per-benchmark profiles
       env:
         CODSPEED_HS_CCS_DIR: ${{github.workspace}}/ccs
+        # One iteration per leaf, exactly as the instrumented run does, so this
+        # profile is comparable to a measured one rather than merely similar.
+        # Without it, tasty-bench's adaptive loop runs the body as many times as
+        # convergence demands -- a count that varies with machine load, which
+        # shifts the *shape*, because harness cost is per-measurement while body
+        # cost is per-iteration.
+        #
+        # It also makes this run reproducible, which is what lets the merge check
+        # its own assumption rather than trusting it.
+        CODSPEED_HS_DETERMINISTIC: "1"
       run: |
         BIN=$(cabal list-bin bench:example \
           --enable-profiling --enable-library-profiling \

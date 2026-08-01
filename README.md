@@ -280,6 +280,21 @@ inputs beforehand — `env` already does.
 an unboxed loop that allocates nothing whatsoever; the `example` benchmark demonstrates
 this next to a version that does allocate.
 
+**Fix your random seed.** Use `mkStdGen 42`, not `newStdGen` or `randomIO`, and prefer
+a committed input file to a generated one.
+
+This matters more here than under plain `tasty-bench`, which averages the noise away.
+Under CPU simulation the body runs *once*, so a benchmark that generates its own
+randomness reports whatever that single draw happened to cost — the instrument is
+deterministic, the program isn't, and the "regression" you chase is a different random
+input. The same applies to anything that branches on the clock (`timeout`, adaptive
+iteration, backoff): the measured run is ~200× slower than a native one, so it can take
+a different path entirely.
+
+Seeded randomness is fine — both runs then do identical work. If a workload genuinely
+cannot be seeded, allocation with a tolerance is the only signal that survives, and
+CodSpeed's instruction count is not meaningful for it.
+
 **No default timeout under instrumentation.** `tasty-bench` imposes 100 seconds per
 benchmark. Simulation is roughly 200× slower, so that is reached by work taking half a
 second natively — and the truncation is silent, with the instrument still reporting the
