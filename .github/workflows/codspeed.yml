@@ -53,7 +53,10 @@ jobs:
     - name: Build the benchmark
       run: |
         cabal update
-        cabal build bench:example
+        # Both, because the measured command chains them. `cabal list-bin`
+        # reports where a binary *would* be, built or not, so forgetting one
+        # surfaces as exit 127 from inside Valgrind rather than as a build error.
+        cabal build bench:example codspeed-hs-rewrite
 
     - name: Locate the binaries
       id: bin
@@ -62,6 +65,9 @@ jobs:
           echo "path=$(cabal list-bin bench:example)"
           echo "rewrite=$(cabal list-bin codspeed-hs-rewrite)"
         } >>"$GITHUB_OUTPUT"
+        # list-bin does not check, so check.
+        test -x "$(cabal list-bin bench:example)"
+        test -x "$(cabal list-bin codspeed-hs-rewrite)"
 
     # Simulation rather than walltime: it is deterministic, and a GitHub-hosted
     # runner is too noisy for walltime to mean much. Note this makes the run
