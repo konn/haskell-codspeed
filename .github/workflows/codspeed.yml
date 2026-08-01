@@ -85,6 +85,71 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
+  # Diagnostic. CodSpeed accepted three uploads and recorded no benchmarks in any
+  # of them, and the reason is not visible from outside: the runner reports
+  # success, and in simulation mode it does not parse the profile it uploads.
+  #
+  # This runs the CLI directly rather than through the action, purely because
+  # `codspeed run` takes --profile-folder and the action does not, so the
+  # callgrind output can be captured and inspected. Delete once the cause is
+  # known; the action job above is the real one.
+  profile-dump:
+    name: Capture the raw profile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{env.GHC_VERSION}}
+        cabal-version: ${{env.CABAL_VERSION}}
+
+    - name: Cache cabal store
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{steps.setup.outputs.cabal-store}}
+          dist-newstyle
+        key: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-${{hashFiles('cabal.project.freeze', 'haskell-codspeed.cabal')}}
+        restore-keys: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-
+
+    - name: Build
+      run: cabal update && cabal build bench:example
+
+    - name: Run under the CLI with a known profile folder
+      env:
+        CODSPEED_HS_SOURCE_FILE: bench/Example.hs
+      run: |
+        curl -fsSL https://codspeed.io/install.sh | bash
+        export PATH="$HOME/.codspeed/bin:$PATH"
+        mkdir -p "$GITHUB_WORKSPACE/profile"
+        codspeed run -m simulation \
+          --profile-folder "$GITHUB_WORKSPACE/profile" \
+          -- "$(cabal list-bin bench:example)" --pattern 'fib.1000' || true
+
+    - name: Summarise what the profile contains
+      if: always()
+      run: |
+        cd "$GITHUB_WORKSPACE/profile" || exit 0
+        ls -la
+        for f in *.out*; do
+          [ -f "$f" ] || continue
+          echo "## $f"
+          grep -E '^(version|creator|cmd|part|desc: Trigger|events|summary|totals):' "$f" | head -40
+        done | tee "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the profile
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: raw-profile
+        path: profile/
+        if-no-files-found: warn
+
   flamegraph:
     name: Cost-centre flamegraphs
     runs-on: ubuntu-latest
