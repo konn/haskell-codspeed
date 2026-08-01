@@ -53,7 +53,10 @@ library instrument-hooks
   hs-source-dirs: vendor-hs
   exposed-modules: CodSpeed.InstrumentHooks.Vendor
   include-dirs: vendor/instrument-hooks/includes
-  c-sources: vendor/instrument-hooks/dist/core.c
+  -- Upstream ships this as dist/core.c. It is vendored under cbits/ instead
+  -- because the scaffold's .gitignore carries an unanchored `dist` rule for build
+  -- output, which silently excluded the file from the repository.
+  c-sources: vendor/instrument-hooks/cbits/core.c
   install-includes:
     callgrind.h
     compat.h

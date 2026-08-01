@@ -7,7 +7,7 @@ Only the files this package actually needs are vendored:
 
 | path | why |
 | --- | --- |
-| `dist/core.c` | the amalgamated (Zig-transpiled) implementation |
+| `cbits/core.c` | the amalgamated (Zig-transpiled) implementation |
 | `includes/core.h` | the public API, plus the `static inline` window wrappers |
 | `includes/callgrind.h` | Callgrind client-request macros |
 | `includes/valgrind.h` | required by `callgrind.h` |
@@ -18,6 +18,17 @@ Only the files this package actually needs are vendored:
 
 `cabal sdist` has no VCS awareness, so a submodule would produce a tarball that cannot build.
 A committed copy is the only arrangement where a fresh clone and an unpacked sdist behave alike.
+
+## Why `cbits/` and not `dist/`
+
+Upstream ships the amalgamation as `dist/core.c`, and it was vendored under that name at
+first. The repository's `.gitignore` carries an unanchored `dist` rule for build output,
+which matched this directory too — so `git add -A` quietly left the file out. Everything
+still built locally, because the file was on disk; the first CI run on a fresh clone failed
+with `does not exist: vendor/instrument-hooks/dist/core.c`.
+
+Renaming the directory is the fix rather than a `!` negation in `.gitignore`, which would
+work but leaves the same trap in place for the next person.
 
 ## Updating
 
