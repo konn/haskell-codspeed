@@ -6,6 +6,7 @@ import CallgrindSpec qualified
 import ConfigSpec qualified
 import DemangleSpec qualified
 import InstrumentSpec qualified
+import MergeSpec qualified
 import PreflightSpec qualified
 import SidecarSpec qualified
 import StatsSpec qualified
@@ -50,6 +51,12 @@ main = do
           , CallgrindSpec.test_selfCost
           ]
       , testGroup "DemangleSpec" [DemangleSpec.test_demangle]
+      , testGroup
+          "MergeSpec"
+          [ MergeSpec.test_folded
+          , MergeSpec.test_buckets
+          , MergeSpec.test_merge
+          ]
       , testGroup
           "StatsSpec"
           [ StatsSpec.test_gcStatsAvailable

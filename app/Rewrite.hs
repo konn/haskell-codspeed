@@ -1,5 +1,4 @@
-{- | Rewrite the symbol names in a Callgrind profile so CodSpeed's flamegraph
-frames read as Haskell.
+{- | Make a Callgrind profile legible to CodSpeed's flamegraph, in two steps.
 
 Run after the benchmark and before the runner uploads, which under
 @codspeed run@ means chaining it onto the measured command:
@@ -8,30 +7,39 @@ Run after the benchmark and before the runner uploads, which under
 codspeed run -m simulation -- bash -c './bench && codspeed-hs-rewrite'
 @
 
-With no argument it rewrites @$CODSPEED_PROFILE_FOLDER@, which the runner sets.
+With no argument it works on @$CODSPEED_PROFILE_FOLDER@, which the runner sets.
 
-== Why this is a rename and nothing more
+== What it does
 
-Every cost line is copied through untouched, so totals are preserved by
-construction rather than by an assertion that could be wrong. The only lines
-altered are @fn=@ and @cfn=@ — the function names Callgrind read out of the ELF
-symbol table, which for a GHC binary are z-encoded.
+__Always: decode the symbols.__ Callgrind reads frame names out of the ELF
+symbol table, so a GHC binary renders as
+@ghczminternal_GHCziInternalziNum_zdfNumIntzuzdczp_info@. That becomes
+@GHC.Internal.Num.$fNumInt_$c+@. A pure rename — every cost line is copied
+through untouched.
 
-Names are left alone when Callgrind's string compression is on (@fn=(3) name@),
-since renaming one occurrence of a compressed name without rewriting the whole id
-table would corrupt the file. CodSpeed's runner passes @--compress-strings=no@,
-so this is a guard rather than a limitation.
+__When cost-centre profiles are available: merge them in.__ If
+@$CODSPEED_HS_CCS_DIR@ holds a @.folded@ profile for a benchmark, that
+benchmark's part is rewritten as a cost-centre tree with the measured costs
+distributed across it. This is what makes @Main.$wgo@ appear at all: at @-O2@ it
+has no ELF frame, and its cost shows up under thunk-entry and update-frame
+machinery. See "CodSpeed.Callgrind.Merge" for what is measured and what is
+modelled — the distinction matters and the emitted graph is labelled with it.
+
+Both steps preserve every part's @totals:@ exactly, so the number CodSpeed
+reports is untouched either way.
 
 Failure is never fatal: a profile that cannot be rewritten is uploaded as it was,
 because a legible flamegraph is worth less than a correct measurement.
 -}
 module Main (main) where
 
+import CodSpeed.Callgrind
 import CodSpeed.Callgrind.Demangle (demangleSymbol)
-import Control.Exception (SomeException, try)
-import Data.ByteString.Char8 qualified as BS
-import Data.Foldable (for_)
-import System.Directory (listDirectory, renameFile)
+import CodSpeed.Callgrind.Merge (mergePart, parseFolded)
+import CodSpeed.Profiling.CCS (uriToFileName)
+import Control.Exception (SomeException, evaluate, try)
+import Data.List (isPrefixOf, stripPrefix)
+import System.Directory (doesFileExist, listDirectory, renameFile)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeExtension, (</>))
@@ -43,6 +51,7 @@ main = do
   folder <- case args of
     (dir : _) -> pure (Just dir)
     [] -> lookupEnv "CODSPEED_PROFILE_FOLDER"
+  ccsDir <- lookupEnv "CODSPEED_HS_CCS_DIR"
   case folder of
     Nothing -> do
       hPutStrLn stderr $
@@ -54,60 +63,69 @@ main = do
       case entries of
         Left err -> warn ("cannot read " <> dir) err
         Right names ->
-          for_ [dir </> n | n <- names, takeExtension n == ".out"] rewriteFile
+          mapM_ (rewriteFile ccsDir) [dir </> n | n <- names, takeExtension n == ".out"]
 
 {- | Rewrite one profile in place, via a temporary file so a failure part-way
 leaves the original untouched.
 -}
-rewriteFile :: FilePath -> IO ()
-rewriteFile path = do
+rewriteFile :: Maybe FilePath -> FilePath -> IO ()
+rewriteFile ccsDir path = do
   outcome <- try $ do
-    contents <- BS.readFile path
-    let ls = BS.lines contents
-        (renamed, n) = foldr step ([], 0 :: Int) ls
-        step l (acc, k) = case rewriteLine l of
-          Just l' -> (l' : acc, k + 1)
-          Nothing -> (l : acc, k)
-    BS.writeFile tmp (BS.unlines renamed)
+    profile <- parseProfile <$> readFile path
+    parts' <- mapM (rewritePart ccsDir) (profileParts profile)
+    let out = renderProfile profile {profileParts = map fst parts'}
+    -- Force before opening the handle: readFile is lazy, and writing to the
+    -- same path we are still reading would truncate it.
+    _ <- evaluate (length out)
+    writeFile tmp out
     renameFile tmp path
-    pure n
+    pure (length [() | (_, True) <- parts'])
   case outcome of
     Left err -> warn ("cannot rewrite " <> path) err
-    Right 0 ->
-      hPutStrLn stderr $
-        "[codspeed] rewrite: "
-          <> path
-          <> ": no GHC symbols found, left unchanged"
     Right n ->
       hPutStrLn stderr $
-        "[codspeed] rewrite: " <> path <> ": " <> show n <> " frames renamed"
+        "[codspeed] rewrite: " <> path <> ": " <> show n <> " part(s) merged with cost centres"
   where
     tmp = path <> ".rewrite"
 
-{- | 'Just' when the line names a function and the name decoded to something
-different.
+{- | Rename a part's symbols, and merge cost centres into it when a profile for
+its benchmark exists. The 'Bool' says whether a merge happened.
 -}
-rewriteLine :: BS.ByteString -> Maybe BS.ByteString
-rewriteLine l = do
-  (prefix, sym) <- functionLine l
-  -- Compressed names are `(3)` or `(3) name`; see the module header.
-  if BS.null sym || BS.head sym == '('
-    then Nothing
-    else do
-      let decoded = BS.pack (demangleSymbol (BS.unpack sym))
-      if decoded == sym then Nothing else Just (prefix <> decoded)
+rewritePart :: Maybe FilePath -> Part -> IO (Part, Bool)
+rewritePart ccsDir part = do
+  merged <- case (ccsDir, partTrigger part) of
+    (Just dir, Just uri) | not ("Metadata:" `isPrefixOf` uri) -> do
+      let candidate = dir </> uriToFileName uri <> ".folded"
+      there <- doesFileExist candidate
+      if not there
+        then pure Nothing
+        else do
+          forest <- parseFolded <$> readFile candidate
+          pure (mergePart forest part)
+    _ -> pure Nothing
+  pure $ case merged of
+    Just body -> (part {partBody = body}, True)
+    Nothing -> (part {partBody = map renameLine (partBody part)}, False)
 
-{- | Split @fn=@ or @cfn=@ off a line, keeping the separator with the prefix.
+{- | Decode a @fn=@ or @cfn=@ payload.
 
-Deliberately only these two. @fl=@, @fi=@, @fe=@ and @cfi=@ are source files and
-@ob=@, @cob=@ are object files; none of them are z-encoded, and rewriting a file
-name would only make the profile lie about where the code lives.
+Deliberately only those two. @fl=@, @fi=@, @fe=@ and @cfi=@ are source files and
+@ob=@, @cob=@ are object files; none are z-encoded, and rewriting a file name
+would only make the profile lie about where the code lives.
+
+Names are left alone when Callgrind's string compression is on (@fn=(3) name@),
+since renaming one occurrence of a compressed name without rewriting the id table
+would corrupt the file. CodSpeed's runner passes @--compress-strings=no@, so this
+is a guard rather than a limitation.
 -}
-functionLine :: BS.ByteString -> Maybe (BS.ByteString, BS.ByteString)
-functionLine l
-  | Just rest <- BS.stripPrefix (BS.pack "cfn=") l = Just (BS.pack "cfn=", rest)
-  | Just rest <- BS.stripPrefix (BS.pack "fn=") l = Just (BS.pack "fn=", rest)
-  | otherwise = Nothing
+renameLine :: String -> String
+renameLine l
+  | Just sym <- stripPrefix "cfn=" l = "cfn=" <> decode sym
+  | Just sym <- stripPrefix "fn=" l = "fn=" <> decode sym
+  | otherwise = l
+  where
+    decode s@('(' : _) = s
+    decode s = demangleSymbol s
 
 warn :: String -> SomeException -> IO ()
 warn what err =

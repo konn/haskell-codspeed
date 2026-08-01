@@ -83,6 +83,7 @@ library
   exposed-modules:
     CodSpeed.Callgrind
     CodSpeed.Callgrind.Demangle
+    CodSpeed.Callgrind.Merge
     CodSpeed.Instrument
     CodSpeed.Instrument.Raw
     CodSpeed.Instrument.RootFrame
@@ -127,7 +128,6 @@ executable codspeed-hs-rewrite
   -- ByteString because this runs inside the Valgrind-traced command, at roughly
   -- 200x native, over a profile that is comfortably hundreds of kilobytes.
   build-depends:
-    bytestring,
     directory,
     filepath,
     haskell-codspeed,
@@ -199,6 +199,7 @@ test-suite haskell-codspeed-test
     ConfigSpec
     DemangleSpec
     InstrumentSpec
+    MergeSpec
     PreflightSpec
     SidecarSpec
     StatsSpec
