@@ -96,6 +96,9 @@ jobs:
   profile-dump:
     name: Capture the raw profile
     runs-on: ubuntu-latest
+    # See the note on `upstream-example`: this job uploads too, and a commit with
+    # more than one upload cannot be read.
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -223,6 +226,12 @@ jobs:
   upstream-example:
     name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
+    # Manual only. Several jobs uploading for one commit is not readable: across
+    # three runs the same control recorded, then did not, and the surviving set
+    # was whichever job uploaded last -- except in one run where four merged.
+    # Whatever the backend does with concurrent uploads, a probe cannot be run
+    # alongside anything else, and neither can the suite whose result matters.
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
