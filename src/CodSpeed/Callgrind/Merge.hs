@@ -54,7 +54,7 @@ module CodSpeed.Callgrind.Merge (
 
 import CodSpeed.Callgrind
 import CodSpeed.Callgrind.Demangle (demangleSymbol)
-import Data.List (isInfixOf, isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 
@@ -270,9 +270,34 @@ mergePart forest part
     rootName = "__codspeed_root_frame__hsBench"
     modelledName = "<cost centres: modelled, see haskell-codspeed>"
 
+    -- Callgrind never emits a body without an ob=, and a rewritten one must not
+    -- either: a frame that belongs to no object is not expressible in the
+    -- format. Taken from the measured part rather than invented, preferring
+    -- whichever object the heaviest function came from -- which is the binary
+    -- under test, not libc.
+    --
+    -- fl=??? with three question marks, which is what Callgrind writes for an
+    -- unknown file; the first version wrote two.
+    context =
+      [ "ob=" <> obj
+      | Just obj <- [heaviestObject]
+      ]
+        <> ["fl=???"]
+
+    heaviestObject =
+      let objs = objectByFunction part
+       in case [ o
+               | (f, _) <- take 1 (sortOn (negate . totalOf . snd) (M.toList selfs))
+               , Just o <- [M.lookup f objs]
+               ] of
+            (o : _) -> Just o
+            [] -> case M.elems objs of
+              (o : _) -> Just o
+              [] -> Nothing
+
     bodyLines =
       concat
-        [ ["fl=??", "fn=" <> rootName, costLine remainder]
+        [ context <> ["fn=" <> rootName, costLine remainder]
         , -- The modelled subtree, announced by the frame it hangs from.
           concat
             [ ["cfn=" <> modelledName, "calls=1 0", costLine (ccCost totalWeight)]

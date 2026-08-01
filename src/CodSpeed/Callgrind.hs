@@ -39,6 +39,7 @@ module CodSpeed.Callgrind (
   -- * Reading a part
   partTrigger,
   selfCostByFunction,
+  objectByFunction,
 ) where
 
 import Data.Char (isDigit)
@@ -188,6 +189,22 @@ selfCostByFunction = snd . foldl step (initial, M.empty) . partBody
                   Nothing -> acc
               )
       | otherwise = ((current, afterCalls), acc)
+
+{- | Which object file each function came from.
+
+@ob=@ is sticky: it names the object for every function after it until the next
+@ob=@. A rewritten body has to re-state it, because Callgrind never emits a body
+without one and a frame belonging to no object is not something the format can
+express.
+-}
+objectByFunction :: Part -> Map String String
+objectByFunction = snd . foldl step (Nothing, M.empty) . partBody
+  where
+    step (obj, acc) line
+      | Just o <- stripPrefix "ob=" line = (Just o, acc)
+      | Just fn <- stripPrefix "fn=" line =
+          (obj, maybe acc (\o -> M.insertWith (\_ old -> old) fn o acc) obj)
+      | otherwise = (obj, acc)
 
 -- | A cost line starts with a position: a digit, @+@, @-@ or @*@.
 isCostLine :: String -> Bool

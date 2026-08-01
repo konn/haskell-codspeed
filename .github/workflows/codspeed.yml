@@ -247,6 +247,85 @@ jobs:
         mode: simulation
         run: ${{steps.bin.outputs.path}} --pattern 'fib.1000'
 
+  # Does the merged (authored) call graph render?
+  #
+  # Deliberately a probe rather than the shipping path. Turning the merge on in
+  # the `benchmarks` job produced a flamegraph of one frame -- <RTS: thunks and
+  # stack> at 100% -- and moved the reported metric 3.62 -> 4.36 ms, so it is not
+  # something to retry in production.
+  #
+  # This runs the same binary in the same commit under its own component, so its
+  # URIs sit next to the rename-only ones in the same CodSpeed run and the two can
+  # be compared directly. Its own job, so its own run part: legs that share one
+  # overwrite each other, which is how four earlier "findings" turned out to be
+  # nothing.
+  #
+  # Changed since the failure: the emitted body now carries ob= (taken from the
+  # measured part, preferring the object the heaviest function came from, which is
+  # the binary rather than libc) and fl=??? with three question marks. Callgrind
+  # never emits a body without an object, and the rename-only path -- which
+  # renders correctly -- keeps both. That is the single variable this tests.
+  merge-probe:
+    name: Merge probe
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{env.GHC_VERSION}}
+        cabal-version: ${{env.CABAL_VERSION}}
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ${{steps.setup.outputs.cabal-store}}
+          dist-newstyle
+        key: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-${{hashFiles('cabal.project.freeze', 'haskell-codspeed.cabal')}}
+        restore-keys: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-
+
+    - name: Build both ways
+      run: |
+        cabal update
+        cabal build bench:example codspeed-hs-rewrite
+        cabal build bench:example \
+          --enable-profiling --enable-library-profiling \
+          --profiling-detail=late-toplevel
+
+    - name: Locate the binaries
+      id: bin
+      run: |
+        {
+          echo "path=$(cabal list-bin bench:example)"
+          echo "rewrite=$(cabal list-bin codspeed-hs-rewrite)"
+        } >>"$GITHUB_OUTPUT"
+        test -x "$(cabal list-bin bench:example)"
+        test -x "$(cabal list-bin codspeed-hs-rewrite)"
+
+    - name: Side-car, one iteration per leaf
+      run: |
+        BIN=$(cabal list-bin bench:example \
+          --enable-profiling --enable-library-profiling \
+          --profiling-detail=late-toplevel)
+        CODSPEED_HS_DETERMINISTIC=1 \
+        CODSPEED_HS_CCS_DIR="$GITHUB_WORKSPACE/ccs" \
+          "$BIN" --pattern 'fib.1000'
+        ls "$GITHUB_WORKSPACE/ccs"
+
+    - name: Measure, merging cost centres in
+      uses: CodSpeedHQ/action@v5
+      env:
+        CODSPEED_HS_CCS_DIR: ${{github.workspace}}/ccs
+        # Its own component, so these URIs cannot collide with the rename-only
+        # ones this same commit reports.
+        CODSPEED_HS_COMPONENT: probe-merge
+      with:
+        mode: simulation
+        run: ${{steps.bin.outputs.path}} --pattern 'fib.1000' && ${{steps.bin.outputs.rewrite}}
+
   # Captures the raw callgrind output and checks its shape.
   #
   # None of these are known backend requirements -- the one requirement that bit
