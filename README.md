@@ -69,8 +69,23 @@ codspeed-hs-compare baseline/alloc.csv alloc.csv --tolerance 0.01
 
 ```
 allocation: 1 regression(s) beyond 1.0%
-  bench/Example.hs::allocation::materialised: +20.0% 9591818 B -> 11510181 B
+  example::fib::10000::leaky: +20.0% 643416 B -> 772099 B
 ```
+
+The `fib` benchmarks in [bench/Example.hs](bench/Example.hs) are there to make this
+concrete: the same recursion twice, differing only in whether the accumulators are
+forced.
+
+```
+example::fib::10000::leaky    643416 B
+example::fib::10000::strict        0 B
+example::fib::1000::leaky      47943 B
+example::fib::1000::strict         0 B
+```
+
+The strict variant compiles to an unboxed loop and allocates *nothing*; the lazy one
+builds a chain of pending additions on the heap. A change that accidentally makes a
+strict fold lazy is invisible in a quick timing check and unmissable here.
 
 A benchmark disappearing from the suite also fails, since that is otherwise
 indistinguishable from one that stopped regressing.
@@ -92,16 +107,19 @@ whose frames are Haskell cost centres — not RTS internals:
 cabal build all --enable-profiling --enable-library-profiling \
   --profiling-detail=late-toplevel
 CODSPEED_HS_CCS_DIR=ccs ./example
-speedscope ccs/example__allocation__materialised.folded
+speedscope ccs/example__fib__10000__leaky.folded
 ```
 
+For the leaky `fib`, the whole profile is the leak:
+
 ```
-…withRegion1;Main.main9;Main.main_$s$wfuncToBenchLoop                 7365600000
-…funcToBenchLoop;GHC.Internal.List.reverse1                          2455200000
+…funcToBenchLoop3;Main.$wgo                                2621120000
+…funcToBenchLoop3;Main.$wgo;GHC.Internal.Num.$fNumInt_$c+  1310428944
 ```
 
-That is the `materialised` benchmark and the `reverse` inside it. The companion
-`fused (allocates nothing)` benchmark shows no body allocation at all.
+The accumulator loop, and the `Int` addition piling up inside it. Its strict
+companion has no `Main` frames in the profile at all — nothing of the benchmark body
+reaches the heap.
 
 `-fprof-late` inserts cost centres *after* optimisation, so these name the program
 that actually runs. The profile is re-rooted at the benchmark using the cost-centre

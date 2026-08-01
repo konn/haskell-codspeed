@@ -140,10 +140,15 @@ benchmark example
   type: exitcode-stdio-1.0
   hs-source-dirs: bench
   main-is: Example.hs
+  -- The flag set CodSpeed.RTS.Preflight recommends for simulation: a big nursery
+  -- so collections stay out of measured windows, -T for GC statistics, -V0 to
+  -- silence the RTS ticker (which fires far too often relative to work running
+  -- ~200x slow under Valgrind) and -I0 so no collection happens merely because
+  -- the process paused. Notably absent: --nonmoving-gc.
   ghc-options:
     -O2
     -rtsopts
-    "-with-rtsopts=-A32m -T"
+    "-with-rtsopts=-A32m -T -V0 -I0"
 
   build-depends:
     deepseq,

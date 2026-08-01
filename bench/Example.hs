@@ -32,8 +32,18 @@ main =
         ]
     , bgroup
         "fib"
-        [ bench (show n) (nf fib n)
-        | n <- [15, 20 :: Int]
+        -- The same recursion twice, differing only in whether the accumulators
+        -- are forced. The lazy one builds a chain of n unevaluated additions on
+        -- the heap; the strict one runs in constant space. Allocation separates
+        -- them completely, and allocation is the metric that is exactly
+        -- reproducible -- so this is the shape of regression the sidecar gate
+        -- exists to catch.
+        [ bgroup
+            (show n)
+            [ bench "leaky" (nf fibLeaky n)
+            , bench "strict" (nf fibStrict n)
+            ]
+        | n <- [1000, 10000 :: Int]
         ]
     , bgroup
         "allocation"
@@ -59,9 +69,26 @@ sumReversed k = sum (reverse [1 .. k])
 descending :: Int -> [Int]
 descending n = [n, n - 1 .. 1]
 
-fib :: Int -> Integer
-fib n = go n 0 1
+{- | Fibonacci by accumulator, leaving the accumulator unforced.
+
+@a + b@ is built as a thunk rather than evaluated, so after @n@ steps the heap
+holds a chain of @n@ pending additions, collapsed only when the result is finally
+demanded. The canonical Haskell space leak.
+
+'Int' rather than 'Integer' deliberately: the arithmetic is then constant-cost, so
+the difference against 'fibStrict' is the thunks and nothing else.
+-}
+fibLeaky :: Int -> Int
+fibLeaky n = go n 0 1
   where
-    go :: Int -> Integer -> Integer -> Integer
+    go :: Int -> Int -> Int -> Int
     go 0 a _ = a
     go k a b = go (k - 1) b (a + b)
+
+-- | The same recursion, forcing each accumulator as it goes.
+fibStrict :: Int -> Int
+fibStrict n = go n 0 1
+  where
+    go :: Int -> Int -> Int -> Int
+    go 0 a _ = a
+    go k !a !b = go (k - 1) b (a + b)
