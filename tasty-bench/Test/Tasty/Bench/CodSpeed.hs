@@ -73,6 +73,9 @@ module Test.Tasty.Bench.CodSpeed (
   -- * Configuration
   Config (..),
   defaultConfig,
+  -- | 'configIntegration' cannot be set without these.
+  Integration (..),
+  pvpToSemver,
 
   -- * Everything else from tasty-bench
   module Test.Tasty.Bench,
@@ -82,6 +85,7 @@ import CodSpeed.Instrument (
   Integration (..),
   Session,
   isInstrumented,
+  pvpToSemver,
   sessionMode,
   withSession,
  )

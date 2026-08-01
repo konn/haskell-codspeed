@@ -107,6 +107,91 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
+  # Why the suite has no flamegraph in CodSpeed's UI, which is the whole point of
+  # the package.
+  #
+  # Ruled out already, by evidence rather than reasoning:
+  #   size            codspeed-cpp renders a 90.8 ns benchmark; ours are ~1000x
+  #                   bigger and do not
+  #   exec-harness    that same codspeed-cpp benchmark is in-process
+  #                   instrument-hooks, the same shape as ours
+  #   root frame, markers, env json, URI shape, metadata ordering
+  #                   all present and correct in profiles that still get nothing
+  #   build metadata  194837f reported a plain "0.1.0" and still got nothing
+  #   delay           still false 20+ minutes on, and on every older run
+  #
+  # What is left is the integration NAME. Under simulation the only identity a
+  # profile carries is the "Metadata: <name> <version>" client request, and
+  # codspeed.io/docs/instruments/cpu lists profiling availability per *named*
+  # integration with minimum versions -- which can only be a server-side lookup
+  # on that string. `haskell-codspeed` is not in that table.
+  #
+  # So: same binary, same everything, one token of the reported name changed.
+  #   as_is       records, no flamegraph (control -- if this flips, stop and read)
+  #   as_cpp      reports codspeed-cpp 1.5.0
+  #   as_pytest   reports pytest-codspeed 3.0.0
+  #
+  # Spoofing is a diagnostic, not a fix. If a borrowed name renders, the answer is
+  # to ask CodSpeed to add this integration, not to keep misreporting who produced
+  # the run.
+  #
+  # Uses CodSpeedHQ/action rather than the CLI so each leg gets its own run part
+  # (see the note on `upstream-example`), and gives each leg its own component so
+  # the benchmark URIs cannot collide and overwrite one another.
+  flamegraph-probe:
+    name: Flamegraph probe (${{matrix.arm}})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: as_is
+          integration: ""
+          iversion: ""
+        - arm: as_cpp
+          integration: codspeed-cpp
+          iversion: "1.5.0"
+        - arm: as_pytest
+          integration: pytest-codspeed
+          iversion: "3.0.0"
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{env.GHC_VERSION}}
+        cabal-version: ${{env.CABAL_VERSION}}
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ${{steps.setup.outputs.cabal-store}}
+          dist-newstyle
+        key: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-${{hashFiles('cabal.project.freeze', 'haskell-codspeed.cabal')}}
+        restore-keys: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-
+
+    - name: Build
+      run: cabal update && cabal build bench:example
+
+    - name: Locate the binary
+      id: bin
+      run: echo "path=$(cabal list-bin bench:example)" >>"$GITHUB_OUTPUT"
+
+    # Two benchmarks only: the question is whether a flamegraph exists at all,
+    # and simulation is ~200x native.
+    - name: Measure under a probed integration name
+      uses: CodSpeedHQ/action@v5
+      env:
+        CODSPEED_HS_PROBE_INTEGRATION: ${{matrix.integration}}
+        CODSPEED_HS_PROBE_VERSION: ${{matrix.iversion}}
+        CODSPEED_HS_COMPONENT: probe-${{matrix.arm}}
+      with:
+        mode: simulation
+        run: ${{steps.bin.outputs.path}} --pattern 'fib.1000'
+
   # Captures the raw callgrind output and checks its shape.
   #
   # None of these are known backend requirements -- the one requirement that bit
