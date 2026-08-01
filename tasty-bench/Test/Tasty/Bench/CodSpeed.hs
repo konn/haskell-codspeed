@@ -137,14 +137,11 @@ import Text.Read (readMaybe)
 data Config = Config
   { configIntegration :: Integration
   -- ^ Reported to CodSpeed as the producer of these results.
-  , configSourcePath :: Maybe FilePath
-  {- ^ The leading component of every benchmark URI.
+  , configComponent :: Maybe String
+  {- ^ The Cabal component the suite lives in, e.g. @example@.
 
-  CodSpeed's convention is @{git-relative-path}::{name}@. Haskell has no
-  equivalent of Rust's @file!()@, so when this is 'Nothing' the runner falls
-  back to @$CODSPEED_HS_SOURCE_FILE@ and then to the executable name. Non-path
-  URIs are accepted — CodSpeed's own exec harness emits @exec_harness::\<name\>@
-  — but a real path makes results easier to navigate.
+  'Nothing' takes @$CODSPEED_HS_COMPONENT@, then the executable name — which for
+  a @benchmark foo@ stanza is @foo@, since that is what Cabal names the binary.
   -}
   , configRootFrame :: Bool
   {- ^ Wrap each body in a @__codspeed_root_frame__@ C frame.
@@ -188,7 +185,7 @@ defaultConfig =
           { integrationName = "haskell-codspeed"
           , integrationVersion = "0.1.0.0"
           }
-    , configSourcePath = Nothing
+    , configComponent = Nothing
     , configRootFrame = True
     , configSidecarPath = Nothing
     , configCCSDir = Nothing
@@ -376,14 +373,12 @@ reversed to read outermost-group-first. Leaves whose payload is neither a
 into the tree — are left untouched.
 -}
 instrumentTree :: String -> TestTree -> TestTree
-instrumentTree prefix = mapLeafBenchmarks $ \path tree -> case tree of
+instrumentTree component = mapLeafBenchmarks $ \path tree -> case tree of
   SingleTest name t ->
-    -- drop 1 removes the synthetic "All" root that tasty-bench's defaultMain
-    -- wraps every suite in. It is the same for every benchmark, so keeping it
-    -- would put a constant component in every URI for no benefit -- and URIs are
-    -- the identity CodSpeed tracks across runs, so they should carry only what
-    -- distinguishes one benchmark from another.
-    let uri = mkUri prefix (drop 1 (reverse path))
+    -- The "All" root that tasty-bench wraps every suite in is kept: it is part of
+    -- the identifier tasty-bench itself prints, and matching that exactly is what
+    -- lets a sidecar row and a --csv row refer to the same benchmark.
+    let uri = mkUri component (reverse path)
      in case cast t of
           Just b -> SingleTest name (CodSpeedBench uri (Direct b))
           Nothing -> case cast t of
@@ -391,17 +386,29 @@ instrumentTree prefix = mapLeafBenchmarks $ \path tree -> case tree of
             Nothing -> tree
   other -> other
 
-{- | @prefix::group::group::name@.
+{- | @component:tasty-bench-identifier@.
 
-@::@ is CodSpeed's separator, so any occurring inside a benchmark name is
-rewritten to keep the URI unambiguous.
+The Cabal component, then the benchmark's identifier exactly as @tasty-bench@
+spells it — the dot-separated tasty path, @All@ root included. Matching it is the
+point: @tasty-bench@'s own @--csv@ @Name@ column reads @All.fib.15@, so a sidecar
+row and a @--csv@ row name the same benchmark the same way.
+
+CodSpeed documents @{git-relative-path}::{name}@, but its backend accepts either —
+a probe run confirmed a bare name, a @::@-separated name and a path-shaped one all
+record — so the format is ours to choose.
+
+>>> mkUri "example" ["All", "fib", "1000", "leaky"]
+"example:All.fib.1000.leaky"
+
+>>> mkUri "herbrand-sat-bench" ["All", "solve", "uf20-91"]
+"herbrand-sat-bench:All.solve.uf20-91"
+
+Names are left alone. A benchmark called @flat200-1.cnf@ already contains a dot,
+so the result is not uniquely re-parseable — but mangling the name would make the
+identifier lie about what it names, which is worse.
 -}
 mkUri :: String -> [String] -> String
-mkUri prefix path = intercalate "::" (prefix : map sanitise path)
-  where
-    sanitise (':' : ':' : rest) = '_' : '_' : sanitise rest
-    sanitise (c : rest) = c : sanitise rest
-    sanitise [] = []
+mkUri component path = component <> ":" <> intercalate "." path
 
 -- | 'defaultMainWith' at 'defaultConfig'.
 defaultMain :: [Benchmark] -> IO ()
@@ -420,13 +427,13 @@ defaultMainWith :: Config -> [Benchmark] -> IO ()
 defaultMainWith cfg benchmarks =
   withSession (configIntegration cfg) $ \sess -> do
     _ <- preflight (sessionMode sess)
-    prefix <- resolvePrefix (configSourcePath cfg)
-    announce sess prefix
+    component <- resolveComponent (configComponent cfg)
+    announce sess component
     reportBuildEnvironment sess
     installSignalHandlers
 
     let instrumented = isInstrumented sess
-        tree0 = instrumentTree prefix (testGroup "All" benchmarks)
+        tree0 = instrumentTree component (testGroup "All" benchmarks)
         tree = if instrumented then tree0 else withDefaultTimeout tree0
 
     opts <- parseOptions benchIngredients tree
@@ -458,18 +465,18 @@ simply fallen back to @tasty-bench@'s own timing loop, and nothing is reported t
 CodSpeed. That looks identical to success from CI, and the only symptom is an
 empty run on the CodSpeed side, discovered much later.
 
-Printing the URI prefix too, since a wrong one is the other quiet failure: the
-benchmarks are reported, just under names that do not match the baseline.
+Printing the component too, since a wrong one is the other quiet failure: the
+benchmarks are reported, just under names that do not match the baseline, so
+every one of them looks new.
 -}
 announce :: Session -> String -> IO ()
-announce sess prefix
+announce sess component
   | isInstrumented sess =
       hPutStrLn stderr $
-        "[codspeed] measuring: uri prefix="
-          <> prefix
+        "[codspeed] measuring: component="
+          <> component
           <> ", mode="
           <> mode
-          <> pathWarning
   | otherwise =
       hPutStrLn stderr $
         "[codspeed] NOT measuring: no runner detected, falling back to "
@@ -483,16 +490,6 @@ announce sess prefix
     mode = case sessionMode sess of
       CS.NotInstrumented -> "unreported"
       m -> show m
-
-    -- CodSpeed's convention is {git-relative-path}::{name}. A prefix that is not
-    -- a path still reaches the callgrind file intact, so nothing errors -- the
-    -- benchmarks simply do not appear in the run, which is how this was missed.
-    pathWarning
-      | '/' `elem` prefix || '.' `elem` prefix = ""
-      | otherwise =
-          "\n[codspeed] warning: the uri prefix does not look like a file path. "
-            <> "Set CODSPEED_HS_SOURCE_FILE (or Config's configSourcePath) to this "
-            <> "suite's path relative to the repository root."
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
@@ -525,13 +522,17 @@ withDefaultTimeout = adjustOption $ \opt -> case opt of
   Timeout {} -> opt
   NoTimeout -> mkTimeout 100000000
 
--- | @configSourcePath@, else @$CODSPEED_HS_SOURCE_FILE@, else the program name.
-resolvePrefix :: Maybe FilePath -> IO String
-resolvePrefix (Just p) = pure p
-resolvePrefix Nothing = do
-  fromEnv <- lookupEnv "CODSPEED_HS_SOURCE_FILE"
+{- | @configComponent@, else @$CODSPEED_HS_COMPONENT@, else the program name.
+
+Cabal names a @benchmark foo@ stanza's binary @foo@, so the program name already
+is the component name for any ordinary suite.
+-}
+resolveComponent :: Maybe String -> IO String
+resolveComponent (Just c) = pure c
+resolveComponent Nothing = do
+  fromEnv <- lookupEnv "CODSPEED_HS_COMPONENT"
   case fromEnv of
-    Just p | not (null p) -> pure p
+    Just c | not (null c) -> pure c
     _ -> getProgName
 
 {- | Record what would silently invalidate a baseline.

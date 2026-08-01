@@ -65,11 +65,6 @@ jobs:
     - name: Run benchmarks
       uses: CodSpeedHQ/action@v5
       env:
-        # CodSpeed's URI convention is {git-relative-path}::{name}. Without this
-        # the prefix falls back to the executable name, giving example::fib::...
-        # -- which reaches the callgrind file intact but is not a path, and the
-        # backend recorded no benchmarks for it.
-        CODSPEED_HS_SOURCE_FILE: bench/Example.hs
         # Per-benchmark allocation, written by the suite itself. Uploaded below;
         # this is the metric CodSpeed has no channel for.
         CODSPEED_HS_SIDECAR: ${{github.workspace}}/allocation.csv
@@ -121,8 +116,6 @@ jobs:
       run: cabal update && cabal build bench:example
 
     - name: Run with a known profile folder
-      env:
-        CODSPEED_HS_SOURCE_FILE: bench/Example.hs
       run: |
         curl -fsSL https://codspeed.io/install.sh | bash
         export PATH="$HOME/.codspeed/bin:$PATH"
