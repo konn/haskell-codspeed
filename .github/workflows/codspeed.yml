@@ -159,6 +159,45 @@ jobs:
         path: profile/
         if-no-files-found: warn
 
+  # Differential test, and the only one left that does not require guessing at a
+  # closed backend.
+  #
+  # CI's Haskell profile is demonstrably correct -- six parts, every benchmark
+  # URI, metadata last, non-zero totals across all fourteen event columns, valgrind
+  # and program both exiting 0 -- and CodSpeed still reports no benchmark results.
+  # So run upstream's own example/main.c, which is C, is not this project, and uses
+  # the documented API verbatim, through the identical pipeline.
+  #
+  #   it also records nothing  -> the constraint is on custom integrations or on
+  #                               this repository, not on anything written here
+  #   it records results       -> our profile differs from a working one in some
+  #                               way, and the two can be diffed directly
+  upstream-example:
+    name: Upstream C example (differential)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build upstream's example against our vendored library
+      run: |
+        mkdir -p /tmp/ex && cd /tmp/ex
+        curl -fsSL -o main.c \
+          https://raw.githubusercontent.com/CodSpeedHQ/instrument-hooks/main/example/main.c
+        gcc -O1 -o example main.c \
+          "$GITHUB_WORKSPACE/vendor/instrument-hooks/cbits/core.c" \
+          -I"$GITHUB_WORKSPACE/vendor/instrument-hooks/includes" \
+          -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-parameter \
+          -Wno-unused-but-set-variable -Wno-type-limits -Wno-format -Wno-format-security
+
+    - name: Measure it
+      uses: CodSpeedHQ/action@v5
+      with:
+        mode: simulation
+        run: /tmp/ex/example
+
   flamegraph:
     name: Cost-centre flamegraphs
     runs-on: ubuntu-latest
