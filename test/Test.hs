@@ -44,6 +44,7 @@ main = do
           "StatsSpec"
           [ StatsSpec.test_gcStatsAvailable
           , StatsSpec.test_allocationIsObserved
+          , StatsSpec.test_allocationAcrossThreads
           , StatsSpec.test_allocationFloor
           , StatsSpec.test_subtractFloor
           ]

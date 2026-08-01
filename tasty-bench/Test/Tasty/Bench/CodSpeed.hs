@@ -94,8 +94,10 @@ import CodSpeed.RTS.Stats (
   gcPeakMemInUseBytes,
   measAllocatedBytes,
   measGC,
-  measureRTS,
+  measureAllocation,
+  measureCollections,
  )
+import CodSpeed.RTS.Stats qualified as RTSStats
 import CodSpeed.Sidecar qualified as Sidecar
 import Control.Exception (bracket_)
 import Control.Monad (unless)
@@ -329,26 +331,37 @@ measurePayload st opts uri payload = case payload of
 
 measureOne :: RunnerState -> OptionSet -> String -> Benchmarkable -> IO Result
 measureOne st opts uri b = do
-  t0 <- getMonotonicTimeNSec
-  -- No eventlog markers here: they are emitted by `run`, outside this bracket,
-  -- because traceEventIO allocates on the GHC heap even with the eventlog off
-  -- and one iteration gives no repeat count to divide that away.
+  -- The two halves of the RTS measurement sit on opposite sides of the window,
+  -- and they have to.
   --
-  -- measureRTS owns the GC bracket, so the instrument must not add its own.
-  (_, stats) <-
-    measureRTS $
+  -- Collections are process-wide, so their bracket goes outside, where the
+  -- leading major GC is not charged to the benchmark. Allocation is per-thread,
+  -- and under a root frame the body runs on a fresh bound thread -- so its
+  -- bracket has to be the innermost thing, or it measures the harness. It did:
+  -- every benchmark in this suite reported 2.7-5.0 KB under CodSpeed while
+  -- reporting 0 B and 643418 B natively.
+  --
+  -- No eventlog markers here either: they are emitted by `run`, outside this
+  -- bracket, because traceEventIO allocates on the GHC heap even with the
+  -- eventlog off and one iteration gives no repeat count to divide that away.
+  allocRef <- newIORef 0
+  t0 <- getMonotonicTimeNSec
+  (_, gc) <-
+    measureCollections $
       CS.benchmarkWith
         CS.defaultOptions
-          { CS.optPerformGC = False
+          { -- measureCollections owns the GC bracket.
+            CS.optPerformGC = False
           , CS.optRootFrame = stateRootFrame st
           }
         (stateSession st)
         uri
-        (unBenchmarkable b 1)
+        (measureAllocation (unBenchmarkable b 1) >>= writeIORef allocRef . snd)
   t1 <- getMonotonicTimeNSec
+  allocated <- readIORef allocRef
+  let stats = RTSStats.Measurement {measAllocatedBytes = allocated, measGC = gc}
   modifyIORef' (stateSidecar st) (Sidecar.fromMeasurement uri stats :)
-  let gc = measGC stats
-      est =
+  let est =
         Estimate
           { estMean =
               Measurement

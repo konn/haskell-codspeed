@@ -72,6 +72,33 @@ jobs:
         mode: simulation
         run: ${{steps.bin.outputs.path}}
 
+    # The sidecar is measured under the instrument, on the code path no local run
+    # exercises, so it needs checking there. It shipped broken: the root frame
+    # moved the body onto a fresh bound thread while the per-thread allocation
+    # counter was still being read on the calling one, and every benchmark
+    # reported the harness's 2.7-5.0 KB instead. Nothing failed -- the numbers
+    # were plausible, constant, and wrong.
+    #
+    # So assert the property the fib pair exists to demonstrate: lazy allocates
+    # heavily, strict allocates nothing. Both figures come from the same
+    # mechanism, so this catches the whole class.
+    - name: Check the sidecar measured the benchmark, not the harness
+      if: always()
+      run: |
+        [ -f allocation.csv ] || {
+          echo "::error::the suite wrote no sidecar at all"; exit 1; }
+        cat allocation.csv
+        leaky=$(awk -F, '$1=="example:All.fib.10000.leaky"{print $2}' allocation.csv)
+        strict=$(awk -F, '$1=="example:All.fib.10000.strict"{print $2}' allocation.csv)
+        echo "leaky=$leaky strict=$strict"
+        [ -n "$leaky" ] && [ -n "$strict" ] || {
+          echo "::error::fib.10000 rows missing from the sidecar"; exit 1; }
+        # Natively: 643418 B and 0 B.
+        [ "$leaky" -gt 100000 ] || {
+          echo "::error::lazy fib allocated $leaky B; expected hundreds of kB. The allocation counter is being read on the wrong thread."; exit 1; }
+        [ "$strict" -eq 0 ] || {
+          echo "::error::strict fib allocated $strict B; expected 0. Something outside the body is being charged to it."; exit 1; }
+
     - name: Upload allocation sidecar
       if: always()
       uses: actions/upload-artifact@v4

@@ -39,6 +39,8 @@ module CodSpeed.RTS.Stats (
   Measurement (..),
   GCDelta (..),
   measureRTS,
+  measureAllocation,
+  measureCollections,
   gcStatsAvailable,
 
   -- * Correcting for the bracket's own cost
@@ -121,39 +123,68 @@ the counted region:
 
 Note @optPerformGC = False@: this function owns the collections, and doing them
 twice merely wastes time under a 200x simulation slowdown.
+
+__Only correct when the action runs on the calling thread.__ When it does not —
+under a root frame, which re-enters the RTS and so runs the body on a fresh bound
+thread — compose 'measureCollections' and 'measureAllocation' separately instead,
+putting the latter inside. See 'measureAllocation'.
 -}
 measureRTS :: IO a -> IO (a, Measurement)
 measureRTS act = do
+  ((a, bytes), gc) <- measureCollections (measureAllocation act)
+  pure (a, Measurement {measAllocatedBytes = bytes, measGC = gc})
+
+{- | Bytes allocated by the __calling thread__ while running the action.
+
+This has to wrap the action on the thread that actually runs it.
+'getAllocationCounter' is per-thread, which is exactly why it is preferred here —
+it is immune to what other threads do — but it cuts both ways: wrap it around
+something that hands the work to another thread and it reports that other thread's
+idleness.
+
+That is not hypothetical. Running the body under @__codspeed_root_frame__@ puts it
+on a fresh bound thread, and with the bracket left on the outside every benchmark
+in the example suite reported between 2.7 and 5.0 KB — the harness's own
+bookkeeping — where the same suite measured natively reports 0 B for the strict
+@fib@ and 643418 B for the lazy one. Constant allocation across benchmarks that
+differ enormously is the signature to watch for.
+
+Cheap enough to sit inside a measurement window: reading the counter is a couple
+of instructions and allocates nothing.
+-}
+measureAllocation :: IO a -> IO (a, Word64)
+measureAllocation act = do
+  before <- getAllocationCounter
+  a <- act
+  after <- getAllocationCounter
+  pure (a, countedDown before after)
+
+{- | Collector activity across the action, and a major GC before it.
+
+Process-wide, so unlike 'measureAllocation' it does not care which thread the
+action runs on. 'Nothing' without @-T@.
+
+The leading collection gives the action a clean heap and keeps the previous
+benchmark's garbage off this one's account. There is deliberately no trailing
+one — see 'gcCollections'.
+-}
+measureCollections :: IO a -> IO (a, Maybe GCDelta)
+measureCollections act = do
   withGC <- gcStatsAvailable
   -- Unconditionally, and before any snapshot: a clean heap for the action, and
   -- the previous benchmark's garbage collected on its own account rather than
   -- this one's.
   performGC
-  if withGC then full else allocOnly
+  if withGC then full else (,Nothing) <$> act
   where
-    allocOnly = do
-      before <- getAllocationCounter
-      a <- act
-      after <- getAllocationCounter
-      pure (a, Measurement {measAllocatedBytes = countedDown before after, measGC = Nothing})
-
     full = do
       pre <- getRTSStats
-      before <- getAllocationCounter
       a <- act
-      after <- getAllocationCounter
       -- Deliberately no collection here. It would be charged to the region and
       -- make 'gcCollections' read at least 1 for every benchmark, destroying the
-      -- signal that a GC landed *inside* the window. The allocation counter is
-      -- byte-accurate without one.
+      -- signal that a GC landed *inside* the window.
       post <- getRTSStats
-      pure
-        ( a
-        , Measurement
-            { measAllocatedBytes = countedDown before after
-            , measGC = Just (diffGC pre post)
-            }
-        )
+      pure (a, Just (diffGC pre post))
 
 {- | The allocation counter runs downwards, so the earlier reading is the larger
 one. Clamped, because a thread that hits an allocation limit can have its counter

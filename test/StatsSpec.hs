@@ -9,10 +9,12 @@ process-wide.
 module StatsSpec (
   test_gcStatsAvailable,
   test_allocationIsObserved,
+  test_allocationAcrossThreads,
   test_allocationFloor,
   test_subtractFloor,
 ) where
 
+import CodSpeed.Instrument.RootFrame (withRootFrame)
 import CodSpeed.RTS.Stats
 import Control.Exception (evaluate)
 import Control.Monad (forM)
@@ -77,6 +79,37 @@ test_allocationIsObserved =
         case measGC m of
           Nothing -> assertBool "expected GC stats under -T" False
           Just _ -> pure ()
+    ]
+
+{- | The bug this pins down shipped, and it was invisible in every local run.
+
+'measureAllocation' reads a per-thread counter. 'withRootFrame' re-enters the RTS,
+so the action runs on a fresh bound thread — and with the bracket left on the
+outside, the measurement is of the calling thread, which by then is doing nothing.
+Under CodSpeed every benchmark in the example suite reported 2.7–5.0 KB, lazy and
+strict @fib@ alike, where natively they report 643418 B and 0 B.
+
+Nothing failed. The suite passed, the CSV was written, the numbers were plausible
+and constant.
+-}
+test_allocationAcrossThreads :: TestTree
+test_allocationAcrossThreads =
+  testGroup
+    "measureAllocation and withRootFrame"
+    [ testCase "sees the allocation when it is inside the root frame" $ do
+        (_, n) <- withRootFrame (measureAllocation (allocateSome 200000))
+        assertBool
+          ("expected megabytes of cons cells, got " <> show n <> " B")
+          (n > 1000000)
+    , -- Not a wish, a warning: this is what the shipped code did, and this is
+      -- what it reported. If this assertion ever starts failing because the
+      -- outside sees the allocation too, the composition order stops mattering
+      -- and the comment above should go.
+      testCase "does not see it when it is outside" $ do
+        (_, n) <- measureAllocation (withRootFrame (allocateSome 200000))
+        assertBool
+          ("expected the harness's own few kB, got " <> show n <> " B")
+          (n < 100000)
     ]
 
 test_allocationFloor :: TestTree
