@@ -47,7 +47,8 @@ you wrote.
 ## What it measures
 
 **Instruction counts** come from CodSpeed's CPU-simulation instrument, per benchmark,
-reported under a URI derived from the tasty path (`bench/Bench.hs::solve::uf20`).
+reported as `<component>:<tasty-bench identifier>` (`sat-bench:All.solve.uf20`), which is
+exactly the name `tasty-bench`'s own `--csv` gives it.
 
 **Allocation** comes from GHC itself and is tracked as a co-equal metric. It is read
 from `getAllocationCounter`, which is per-thread and byte-accurate, so unlike
@@ -69,7 +70,7 @@ codspeed-hs-compare baseline/alloc.csv alloc.csv --tolerance 0.01
 
 ```
 allocation: 1 regression(s) beyond 1.0%
-  example::fib::10000::leaky: +20.0% 643416 B -> 772099 B
+  example:All.fib.10000.leaky: +20.0% 643416 B -> 772099 B
 ```
 
 The `fib` benchmarks in [bench/Example.hs](bench/Example.hs) are there to make this
@@ -77,10 +78,10 @@ concrete: the same recursion twice, differing only in whether the accumulators a
 forced.
 
 ```
-example::fib::10000::leaky    643416 B
-example::fib::10000::strict        0 B
-example::fib::1000::leaky      47943 B
-example::fib::1000::strict         0 B
+example:All.fib.10000.leaky    643416 B
+example:All.fib.10000.strict        0 B
+example:All.fib.1000.leaky      47943 B
+example:All.fib.1000.strict         0 B
 ```
 
 The strict variant compiles to an unboxed loop and allocates *nothing*; the lazy one
@@ -95,8 +96,10 @@ identical binary reported 9591818 bytes allocated both times, and 580680 vs 5806
 bytes *copied* — copying depends on what the collector chose to do. The other columns
 are recorded for diagnosis.
 
-A copy is also dropped into `$CODSPEED_PROFILE_FOLDER` when the runner sets one; that
-folder is tarred and uploaded wholesale, so the data rides along for free.
+The CSV goes only where you point it. `CODSPEED_HS_PROFILE_FOLDER_COPY=1` also drops a
+copy into `$CODSPEED_PROFILE_FOLDER`, which the runner tars and uploads wholesale — but
+that folder is the backend's interface, and an unexpected file in it can cost you the
+whole run. See [below](#four-things-a-custom-harness-must-get-right).
 
 ## Haskell cost-centre flamegraphs
 
@@ -107,7 +110,7 @@ whose frames are Haskell cost centres — not RTS internals:
 cabal build all --enable-profiling --enable-library-profiling \
   --profiling-detail=late-toplevel
 CODSPEED_HS_CCS_DIR=ccs ./example
-speedscope ccs/example__fib__10000__leaky.folded
+speedscope ccs/example_All.fib.10000.leaky.folded
 ```
 
 For the leaky `fib`, the whole profile is the leak:
@@ -174,31 +177,45 @@ ghc-options:
 Note that `-A` is part of the measurement contract: changing it shifts instruction
 counts exactly as a code change would, and invalidates the CodSpeed baseline.
 
-## A trap in the instrument-hooks API
+## Four things a custom harness must get right
 
-`instrument_hooks_set_integration` must be called **after** the benchmarks, not
-before.
+None of them are checked anywhere. Get one wrong and the benchmarks run, the
+profile is written with every URI and every cost in it, all return codes are `0`,
+the runner uploads and the CI job goes green — and the CodSpeed run reports *"this
+run could not be processed"* / *"No benchmark results found"*.
 
-Under CPU simulation it is a `CALLGRIND_DUMP_STATS_AT`, and the runner starts
-Valgrind with `--instr-atstart=no`. A dump issued while instrumentation is still
-off leaves Callgrind in a state where `CALLGRIND_START_INSTRUMENTATION` never takes
-effect again, so every measurement afterwards records zero.
+1. **Report the integration first.** `instrument_hooks_set_integration` before any
+   benchmark, so its metadata is `part: 1` of the callgrind file.
+2. **Run the body inside a `__codspeed_root_frame__` frame.**
+   `CUSTOM_HARNESS.md` says so and means it literally.
+3. **Emit a `BENCHMARK_START`/`BENCHMARK_END` marker pair** around the region,
+   with `instrument_hooks_add_marker`. The header presents markers as refining
+   *walltime* flamegraphs; they are required under CPU simulation too.
+4. **Do not write an `environment-<pid>.json`** into `$CODSPEED_PROFILE_FOLDER`
+   unless the backend knows your integration. `instrument_hooks_write_environment`
+   is what puts it there; this package leaves it off unless
+   `CODSPEED_HS_WRITE_ENVIRONMENT` is set.
 
-Measured on CodSpeed's own Valgrind fork, two runs differing only in when that call
-happens:
+2 and 3 must both happen *after* `start_benchmark`. Callgrind records calls made
+after `CALLGRIND_START_INSTRUMENTATION` and does not reconstruct frames already on
+the stack, so a root frame entered before the window opens never appears in the
+profile at all.
 
-```
-set_integration first:  totals: 0
-set_integration last:   totals: 6000008
-```
+How this was established: take upstream's
+[`example/main.c`](https://github.com/CodSpeedHQ/instrument-hooks/blob/main/example/main.c),
+which records, and change exactly one token per variant. All five uploaded, all
+five carried the same 288,719,342 `Ir`, and only the control came back:
 
-Nothing reports an error. The benchmarks run, the profile is written with all the
-right URIs in it, every return code is `0`, the runner uploads and the CI job goes
-green. The only symptom is the CodSpeed run saying *"this run could not be
-processed"*, because every cost in it is zero.
+| variant | change | result |
+|---|---|---|
+| `control` | benchmark URI renamed | **211.8 ms** |
+| `meta_last` | `set_integration` moved after the benchmarks | not recorded |
+| `no_root` | root frame call replaced by a direct call | not recorded |
+| `no_markers` | the two `add_marker` calls deleted | not recorded |
+| `env_json` | `write_environment` added | not recorded |
 
-Upstream's [`example/main.c`](https://github.com/CodSpeedHQ/instrument-hooks/blob/main/example/main.c)
-calls it first, so this is easy to inherit.
+`.github/workflows/codspeed.yml` keeps the matrix, and asserts all four properties
+on this package's own profile.
 
 ## Caveats worth knowing
 

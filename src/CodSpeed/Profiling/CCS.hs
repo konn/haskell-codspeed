@@ -383,8 +383,8 @@ writeFoldedStacks dir weight uri node = do
 
 {- | Turn a benchmark URI into something safe to use as a filename.
 
->>> uriToFileName "bench/Example.hs::sort::1000"
-"bench_Example.hs__sort__1000"
+>>> uriToFileName "example:All.fib.1000.leaky"
+"example_All.fib.1000.leaky"
 -}
 uriToFileName :: String -> FilePath
 uriToFileName = go
