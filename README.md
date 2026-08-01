@@ -83,6 +83,38 @@ are recorded for diagnosis.
 A copy is also dropped into `$CODSPEED_PROFILE_FOLDER` when the runner sets one; that
 folder is tarred and uploaded wholesale, so the data rides along for free.
 
+## Haskell cost-centre flamegraphs
+
+Build the suite the profiling way and each benchmark emits a folded-stacks profile
+whose frames are Haskell cost centres — not RTS internals:
+
+```bash
+cabal build all --enable-profiling --enable-library-profiling \
+  --profiling-detail=late-toplevel
+CODSPEED_HS_CCS_DIR=ccs ./example
+speedscope ccs/example__allocation__materialised.folded
+```
+
+```
+…withRegion1;Main.main9;Main.main_$s$wfuncToBenchLoop                 7365600000
+…funcToBenchLoop;GHC.Internal.List.reverse1                          2455200000
+```
+
+That is the `materialised` benchmark and the `reverse` inside it. The companion
+`fused (allocates nothing)` benchmark shows no body allocation at all.
+
+`-fprof-late` inserts cost centres *after* optimisation, so these name the program
+that actually runs. The profile is re-rooted at the benchmark using the cost-centre
+stack captured when it starts, which strips the dozen-odd frames of `main` and tasty
+scheduling above it.
+
+This needs nothing from CodSpeed and works today. Getting the same shape *inside*
+CodSpeed's own flamegraphs is a different problem: those come from Callgrind, whose
+frames are ELF symbols, and a cost centre is not a symbol — `-fprof-late` emits
+inline `pushCostCentre` and static data, no code label. So no combination of GHC or
+Valgrind flags can put one there; the profile would have to be authored, which rests
+on an unverified assumption about CodSpeed's closed backend.
+
 ## Cooperating with the rest of the toolchain
 
 - **`+RTS -T`** — when present, per-benchmark GC counts and copied bytes are reported
@@ -93,10 +125,10 @@ folder is tarred and uploaded wholesale, so the data rides along for free.
   `ghc-events-analyze` can slice a run per benchmark. Emitted on both the CodSpeed and
   the plain path, since local analysis is the main use case. Off unless the eventlog is
   actually on, because `traceEventIO` allocates either way.
-- **`-fprof-late`** — a profiling build is not the thing to measure (`-prof` adds two
-  words to every heap object, which shifts both instruction counts and allocation), so
-  the intended shape is a separate native side-car run supplying cost-centre topology.
-  Not yet implemented.
+- **`-fprof-late`** — see [above](#haskell-cost-centre-flamegraphs). A profiling build
+  is deliberately not the thing to measure: `-prof` adds two words to every heap
+  object, shifting both instruction counts and allocation. Run it as a side-car
+  instead, so the measured binary stays the one you ship.
 
 ## RTS hygiene
 
@@ -156,11 +188,16 @@ a submodule produces a tarball that cannot build. See
 
 ## Status
 
-Working: per-benchmark measurement, allocation tracking, RTS preflight, eventlog
-markers, and `--csv` / `--baseline` / `--svg` / `bcompare` compatibility.
+Working: per-benchmark measurement, allocation tracking and its CI gate, RTS
+preflight, eventlog markers, cost-centre flamegraphs as a local artifact, and
+`--csv` / `--baseline` / `--svg` / `bcompare` compatibility.
 
-Not yet: cost-centre flamegraphs. CodSpeed's flamegraphs come from Callgrind, whose
-frames are ELF symbols — and a `-fprof-late` cost centre is not a symbol, so no
-combination of GHC or Valgrind flags can put one there. The route is to author the
-callgrind profile from GHC's own cost-centre data, which rests on an unverified
-assumption about CodSpeed's closed backend. See `ci/` and the spikes workflow.
+Not yet: cost-centre-shaped flamegraphs **inside CodSpeed's own UI**. Reaching that
+means authoring the callgrind profile from GHC cost-centre data, and whether the
+backend renders an authored `fn=`/`cfn=`/`calls=` graph — rather than
+re-symbolicating from the binary — is untested. It is a short experiment against a
+CodSpeed-connected repo; until it is run, the local artifact above is the answer.
+
+Also unverified: instruction-count determinism on real x86-64 hardware. Valgrind
+segfaults under emulation on an Apple Silicon host, so the spikes workflow exists to
+answer it on a CI runner.

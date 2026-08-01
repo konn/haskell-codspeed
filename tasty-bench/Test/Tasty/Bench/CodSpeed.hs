@@ -86,6 +86,7 @@ import CodSpeed.Instrument (
   withSession,
  )
 import CodSpeed.Instrument qualified as CS
+import CodSpeed.Profiling.CCS qualified as CCS
 import CodSpeed.RTS.Eventlog qualified as EL
 import CodSpeed.RTS.Preflight (preflight)
 import CodSpeed.RTS.Stats (
@@ -157,6 +158,14 @@ data Config = Config
   measurable on hosts where the simulation instrument cannot run. See
   "CodSpeed.Sidecar" and the @codspeed-hs-compare@ executable.
   -}
+  , configCCSDir :: Maybe FilePath
+  {- ^ Where to write per-benchmark cost-centre profiles, if anywhere.
+
+  Falls back to @$CODSPEED_HS_CCS_DIR@. Only does anything in a @-prof@ build;
+  see "CodSpeed.Profiling.CCS". Output is folded stacks, which @speedscope@ and
+  @flamegraph.pl@ read directly — a Haskell-shaped flamegraph that needs nothing
+  from CodSpeed.
+  -}
   }
 
 -- | This package's identity, no source path, no root frame.
@@ -171,6 +180,7 @@ defaultConfig =
     , configSourcePath = Nothing
     , configRootFrame = False
     , configSidecarPath = Nothing
+    , configCCSDir = Nothing
     }
 
 {- | Per-process runner state.
@@ -189,6 +199,8 @@ data RunnerState = RunnerState
   -}
   , stateSidecar :: !(IORef [Sidecar.Record])
   -- ^ Accumulated as benchmarks run, written once at the end.
+  , stateCCSDir :: !(Maybe FilePath)
+  -- ^ Where to drop per-benchmark folded stacks, in a profiling build.
   }
 
 runnerRef :: IORef (Maybe RunnerState)
@@ -218,7 +230,7 @@ instance IsTest CodSpeedBench where
     -- CodSpeed is *not* attached; emitting them only under the runner would put
     -- the feature out of reach in its main use case. On the fallback path one
     -- region covers tasty-bench's whole adaptive loop, which is what you want.
-    EL.withRegion (maybe False stateEventlog mstate) uri $ case mstate of
+    withCCS mstate uri $ EL.withRegion (maybe False stateEventlog mstate) uri $ case mstate of
       Just st
         | isInstrumented (stateSession st) ->
             case lookupOption opts of
@@ -265,6 +277,35 @@ harvestFallback st uri r =
               , Sidecar.recMajorCollections = 0
               }
       modifyIORef' (stateSidecar st) (record :)
+
+{- | Capture the cost centres a benchmark touched, in a profiling build.
+
+The RTS has no way to reset cost-centre counters, so this snapshots the tree
+either side and subtracts. That is expensive — proportional to the number of
+distinct cost-centre stacks — but it only happens in a @-prof@ build, which is a
+side-car run rather than the one whose numbers are reported.
+
+A no-op in a vanilla build, or when no output directory was configured.
+-}
+withCCS :: Maybe RunnerState -> String -> IO a -> IO a
+withCCS mstate uri act = case (CCS.ccsAvailable, mstate >>= stateCCSDir) of
+  (True, Just dir) -> do
+    -- Taken here rather than at the root, so the profile is re-rooted at this
+    -- benchmark instead of at main. Trimming a shared prefix afterwards does not
+    -- work: CAFs and the RTS's own pseudo-roots hang straight off MAIN, so there
+    -- is nothing shared beyond MAIN itself.
+    here <- CCS.currentCCSId
+    before <- CCS.snapshotCCS
+    r <- act
+    after <- CCS.snapshotCCS
+    case (before, after) of
+      (Just b, Just a) -> do
+        let diffed = CCS.diffCCS b a
+            rooted = maybe Nothing (`CCS.findById` diffed) here
+        CCS.writeFoldedStacks dir CCS.ByAllocation uri (fromMaybe diffed rooted)
+      _ -> pure ()
+    pure r
+  _ -> act
 
 measurePayload :: RunnerState -> OptionSet -> String -> Payload -> IO Result
 measurePayload st opts uri payload = case payload of
@@ -386,8 +427,9 @@ defaultMainWith cfg benchmarks =
     evOn <- EL.eventlogEnabled
     sidecarRef <- newIORef []
     sidecarPath <- resolveSidecarPath (configSidecarPath cfg)
+    ccsDir <- resolveEnvPath "CODSPEED_HS_CCS_DIR" (configCCSDir cfg)
     bracket_
-      (writeIORef runnerRef (Just (RunnerState sess (configRootFrame cfg) evOn sidecarRef)))
+      (writeIORef runnerRef (Just (RunnerState sess (configRootFrame cfg) evOn sidecarRef ccsDir)))
       -- tasty signals its result by throwing ExitCode, so the teardown of a
       -- bracket is the only place the sidecar can reliably be written.
       (flushSidecar sidecarPath sidecarRef >> writeIORef runnerRef Nothing)
@@ -398,9 +440,13 @@ defaultMainWith cfg benchmarks =
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
-resolveSidecarPath (Just p) = pure (Just p)
-resolveSidecarPath Nothing = do
-  fromEnv <- lookupEnv "CODSPEED_HS_SIDECAR"
+resolveSidecarPath = resolveEnvPath "CODSPEED_HS_SIDECAR"
+
+-- | An explicit setting, else a named environment variable, else nothing.
+resolveEnvPath :: String -> Maybe FilePath -> IO (Maybe FilePath)
+resolveEnvPath _ (Just p) = pure (Just p)
+resolveEnvPath var Nothing = do
+  fromEnv <- lookupEnv var
   pure $ case fromEnv of
     Just p | not (null p) -> Just p
     _ -> Nothing

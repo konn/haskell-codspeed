@@ -15,6 +15,7 @@ extra-doc-files:
   README.md
 
 extra-source-files:
+  cbits/codspeed_ccs.h
   cbits/codspeed_shim.h
   vendor/instrument-hooks/COMMIT
   vendor/instrument-hooks/README.md
@@ -80,6 +81,7 @@ library
     CodSpeed.Instrument
     CodSpeed.Instrument.Raw
     CodSpeed.Instrument.RootFrame
+    CodSpeed.Profiling.CCS
     CodSpeed.RTS.Eventlog
     CodSpeed.RTS.Preflight
     CodSpeed.RTS.Stats
@@ -91,8 +93,12 @@ library
     cbits
     vendor/instrument-hooks/includes
 
-  c-sources: cbits/codspeed_shim.c
+  c-sources:
+    cbits/codspeed_ccs.c
+    cbits/codspeed_shim.c
+
   build-depends:
+    containers,
     directory,
     filepath,
     haskell-codspeed:instrument-hooks,
@@ -159,6 +165,7 @@ test-suite haskell-codspeed-test
   -- cabal-gild: discover test --exclude=test/Test.hs
   other-modules:
     BenchEncodingSpec
+    CCSSpec
     InstrumentSpec
     PreflightSpec
     SidecarSpec

@@ -1,6 +1,7 @@
 module Main (main) where
 
 import BenchEncodingSpec qualified
+import CCSSpec qualified
 import InstrumentSpec qualified
 import PreflightSpec qualified
 import SidecarSpec qualified
@@ -63,5 +64,14 @@ main = do
           [ SidecarSpec.test_csvRoundTrip
           , SidecarSpec.test_csvParsing
           , SidecarSpec.test_comparison
+          ]
+      , testGroup
+          "CCSSpec"
+          [ CCSSpec.test_unavailableWithoutProf
+          , CCSSpec.test_findById
+          , CCSSpec.test_diff
+          , CCSSpec.test_pruning
+          , CCSSpec.test_folded
+          , CCSSpec.test_fileNames
           ]
       ]
