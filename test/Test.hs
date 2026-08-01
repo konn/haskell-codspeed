@@ -2,6 +2,7 @@ module Main (main) where
 
 import BenchEncodingSpec qualified
 import CCSSpec qualified
+import ConfigSpec qualified
 import InstrumentSpec qualified
 import PreflightSpec qualified
 import SidecarSpec qualified
@@ -42,7 +43,8 @@ main = do
           ]
       , testGroup
           "StatsSpec"
-          [ StatsSpec.test_gcStatsAvailable
+          [ ConfigSpec.test_integrationVersion
+          , StatsSpec.test_gcStatsAvailable
           , StatsSpec.test_allocationIsObserved
           , StatsSpec.test_allocationAcrossThreads
           , StatsSpec.test_allocationFloor

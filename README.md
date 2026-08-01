@@ -177,45 +177,61 @@ ghc-options:
 Note that `-A` is part of the measurement contract: changing it shifts instruction
 counts exactly as a code change would, and invalidates the CodSpeed baseline.
 
-## Four things a custom harness must get right
+## Report a semver integration version
 
-None of them are checked anywhere. Get one wrong and the benchmarks run, the
-profile is written with every URI and every cost in it, all return codes are `0`,
-the runner uploads and the CI job goes green — and the CodSpeed run reports *"this
-run could not be processed"* / *"No benchmark results found"*.
+`instrument_hooks_set_integration` takes a version string. Give it a Haskell
+package version and CodSpeed discards the entire run.
 
-1. **Report the integration first.** `instrument_hooks_set_integration` before any
-   benchmark, so its metadata is `part: 1` of the callgrind file.
-2. **Run the body inside a `__codspeed_root_frame__` frame.**
-   `CUSTOM_HARNESS.md` says so and means it literally.
-3. **Emit a `BENCHMARK_START`/`BENCHMARK_END` marker pair** around the region,
-   with `instrument_hooks_add_marker`. The header presents markers as refining
-   *walltime* flamegraphs; they are required under CPU simulation too.
-4. **Do not write an `environment-<pid>.json`** into `$CODSPEED_PROFILE_FOLDER`
-   unless the backend knows your integration. `instrument_hooks_write_environment`
-   is what puts it there; this package leaves it off unless
-   `CODSPEED_HS_WRITE_ENVIRONMENT` is set.
+```haskell
+-- 0.1.0.0 -- the Cabal version. PVP. Four components. Not semver.
+integrationVersion = "0.1.0"
+```
 
-2 and 3 must both happen *after* `start_benchmark`. Callgrind records calls made
-after `CALLGRIND_START_INSTRUMENTATION` and does not reconstruct frames already on
-the stack, so a root frame entered before the window opens never appears in the
-profile at all.
+Every integration CodSpeed ships reports semver there — `pytest-codspeed` its
+`__version__`, `codspeed-node` its package version, `codspeed-rust` its crate
+version — so nothing in the documentation calls this out, and PVP is the obvious
+thing for a Haskell package to reach for.
 
-How this was established: take upstream's
-[`example/main.c`](https://github.com/CodSpeedHQ/instrument-hooks/blob/main/example/main.c),
-which records, and change exactly one token per variant. All five uploaded, all
-five carried the same 288,719,342 `Ir`, and only the control came back:
+Nothing reports the problem. The benchmarks run, the profile is written with every
+URI and every cost in it, all return codes are `0`, the runner logs *"Performance
+data uploaded"* and the CI job goes green. The only symptom is the run reporting
+*"this run could not be processed"* / *"No benchmark results found"*.
 
-| variant | change | result |
-|---|---|---|
-| `control` | benchmark URI renamed | **211.8 ms** |
-| `meta_last` | `set_integration` moved after the benchmarks | not recorded |
-| `no_root` | root frame call replaced by a direct call | not recorded |
-| `no_markers` | the two `add_marker` calls deleted | not recorded |
-| `env_json` | `write_environment` added | not recorded |
+Changing that single token, with nothing else touched, took this suite from zero
+benchmarks recorded to all eight. There is a unit test pinning it, because the
+obvious maintenance action — keeping the integration version in step with the
+package version — silently reintroduces it.
 
-`.github/workflows/codspeed.yml` keeps the matrix, and asserts all four properties
-on this package's own profile.
+## Do not run two CodSpeed uploads for one commit without `GH_MATRIX`
+
+Not a Haskell issue, but it cost more time than the bug above and it will happen
+to anyone probing a backend with a job matrix.
+
+The runner keys uploads by *run part*:
+
+```rust
+// runner 5.0.1, src/run_environment/github_actions/provider.rs:226-243
+let run_part_id = if let (Some(Value::Object(matrix)), Some(Value::Object(strategy)))
+    = (gh_matrix, gh_strategy) { format!("{job_name}-{matrix_str}-{strategy_str}") }
+  else { job_name };
+```
+
+`GH_MATRIX` and `GH_STRATEGY` are set by `CodSpeedHQ/action`, and by nothing else.
+Invoke `codspeed run` directly from a matrix and every leg uploads under the same
+run part id, so the backend keeps whichever arrived last and silently drops the
+rest. A matrix of one-variable probes then produces a confident, entirely false
+answer: the legs that "failed" were never read.
+
+Both variables are required — the `if let` matches a tuple, so setting one alone
+changes nothing.
+
+```yaml
+    - name: Measure
+      env:
+        GH_MATRIX: ${{toJson(matrix)}}
+        GH_STRATEGY: ${{toJson(strategy)}}
+      run: codspeed run -m simulation -- ./my-bench
+```
 
 ## Caveats worth knowing
 
