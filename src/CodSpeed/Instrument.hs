@@ -111,15 +111,11 @@ data Integration = Integration
 
 {- | Carry a PVP version into semver without dropping a component.
 
-@A.B.C.D@ becomes @A.B.C+pvp.D@, and anything PVP adds beyond the fourth
-component comes along:
+@A.B.C.D@ becomes @A.B.C+pvp.D@:
 
 >>> import Data.Version (makeVersion)
 >>> pvpToSemver (makeVersion [0, 1, 0, 0])
 "0.1.0+pvp.0"
-
->>> pvpToSemver (makeVersion [1, 2, 3, 4, 5])
-"1.2.3+pvp.4.5"
 
 == Why build metadata and not a pre-release
 
@@ -129,11 +125,11 @@ requirements", and orders it /below/ the plain version — so @0.1.0-pvp.0@ woul
 mark every released Haskell package as unstable and sort it beneath a @0.1.0@ no
 Haskell package would ever publish.
 
-§10 says build metadata is ignored for precedence, which is what PVP's fourth
-component already means: @A.B@ covers breaking changes, @C@ additions, and @D@ is
-reserved for changes that do not affect the API at all. A component that carries
-no compatibility information belongs in the part of the version that carries no
-compatibility information.
+§10 says build metadata is ignored for precedence, and PVP says the matching
+thing about @D@: "Hence A.B.C uniquely identifies the API", with the components
+after the third left to be "used in any way the package maintainer sees fit". A
+component that carries no compatibility information belongs in the part of the
+version that carries no compatibility information.
 
 The cost, which is real: @0.1.0.0@ and @0.1.0.1@ map to versions of /equal/
 precedence, so a consumer comparing them properly cannot tell them apart. They
@@ -176,6 +172,8 @@ Build-metadata identifiers must be alphanumerics and hyphens. These come from
 pvpToSemver :: Version -> String
 pvpToSemver v = core <> metadata
   where
+    -- Everything past the third component goes into the metadata, not just a
+    -- fourth: PVP puts no bound on how many there may be.
     (top, rest) = splitAt 3 (versionBranch v)
     core = intercalate "." (map show (take 3 (top <> repeat 0)))
     metadata
