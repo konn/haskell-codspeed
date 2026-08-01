@@ -173,8 +173,20 @@ jobs:
   #   it records results       -> our profile differs from a working one in some
   #                               way, and the two can be diffed directly
   upstream-example:
-    name: Upstream C example (differential)
+    name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
+    # One variable changed per job, from a baseline that is known to work:
+    # upstream's example/main.c recorded `example_benchmark` at 211.8 ms.
+    #
+    # A five-shape URI probe recorded nothing at all, including a bare name that
+    # ought to have behaved exactly like the baseline -- so more than the URI was
+    # different, and changing several things at once proved uninformative.
+    # Uploads from separate jobs merge into one run, so whichever URIs come back
+    # identify which single change is fatal.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, integration_last, path_uri, multi]
     permissions:
       contents: read
       id-token: write
@@ -188,31 +200,53 @@ jobs:
     #
     # One C program, several URI shapes, one round-trip. Whichever shapes come
     # back name the constraint.
-    - name: Build a URI-shape probe
+    - name: Build the probe
+      env:
+        VARIANT: ${{matrix.variant}}
       run: |
         mkdir -p /tmp/ex && cd /tmp/ex
         cat > probe.c <<'EOF'
+        /* Mirrors upstream's example/main.c: same lifecycle, same root frame,
+         * same markers. Each variant changes exactly one thing. */
         #include <stdio.h>
+        #include <string.h>
+        #include <unistd.h>
         #include "core.h"
+
         static volatile long sink;
-        static void work(int n){ for (long i=0;i<n*100000L;i++) sink += i; }
-        static const char *uris[] = {
-          "bare_name",
-          "prefix::name",
-          "bench/Example.hs::one",
-          "bench/Example.hs::fib::1000::leaky",
-          "noext/path::two",
-        };
-        int main(void){
+        static void work(int n) { for (long i = 0; i < n * 200000L; i++) sink += i; }
+
+        __attribute__((noinline))
+        static void __codspeed_root_frame__probe(int n) { work(n); }
+
+        int main(int argc, char **argv) {
+          const char *v = argc > 1 ? argv[1] : "baseline";
+          int integration_last = !strcmp(v, "integration_last");
           InstrumentHooks *h = instrument_hooks_init();
-          for (unsigned k = 0; k < sizeof uris / sizeof *uris; k++) {
-            instrument_hooks_start_benchmark_inline(h);
-            work(k + 1);
-            instrument_hooks_stop_benchmark_inline(h);
-            instrument_hooks_set_executed_benchmark(h, 1234, uris[k]);
+          if (!integration_last)
+            instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
+
+          const char *uris[3]; int n = 1;
+          if (!strcmp(v, "path_uri")) {
+            uris[0] = "bench/Example.hs::probe::path_uri";
+          } else if (!strcmp(v, "multi")) {
+            n = 3;
+            uris[0] = "probe_multi_1"; uris[1] = "probe_multi_2"; uris[2] = "probe_multi_3";
+          } else if (integration_last) {
+            uris[0] = "probe_integration_last";
+          } else {
+            uris[0] = "probe_baseline";
           }
-          /* last, per the ordering fix */
-          instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
+
+          for (int k = 0; k < n; k++) {
+            instrument_hooks_start_benchmark_inline(h);
+            __codspeed_root_frame__probe(k + 1);
+            instrument_hooks_stop_benchmark_inline(h);
+            instrument_hooks_set_executed_benchmark(h, (int)getpid(), uris[k]);
+          }
+
+          if (integration_last)
+            instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
           instrument_hooks_deinit(h);
           return 0;
         }
@@ -227,7 +261,7 @@ jobs:
       uses: CodSpeedHQ/action@v5
       with:
         mode: simulation
-        run: /tmp/ex/example
+        run: /tmp/ex/example ${{matrix.variant}}
 
   flamegraph:
     name: Cost-centre flamegraphs
