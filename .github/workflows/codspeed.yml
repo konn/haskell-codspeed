@@ -85,6 +85,80 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
+  # Diagnostic. Reproducing CI locally -- CodSpeed's own Valgrind fork, the exact
+  # argument list from src/executor/valgrind/measure.rs -- yields a complete and
+  # correct profile: every benchmark URI, metadata last, all fourteen event
+  # columns, non-zero totals. CodSpeed nonetheless reports no benchmark results.
+  #
+  # The untested differences are x86_64 versus the arm64 used locally, and the
+  # wrapping `codspeed run` puts around valgrind. So capture what CI actually
+  # produces and diff it against the known-good profile.
+  #
+  # Runs the CLI directly only because `codspeed run` accepts --profile-folder and
+  # the action does not. Delete once this is settled.
+  profile-dump:
+    name: Capture the raw profile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{env.GHC_VERSION}}
+        cabal-version: ${{env.CABAL_VERSION}}
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ${{steps.setup.outputs.cabal-store}}
+          dist-newstyle
+        key: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-${{hashFiles('cabal.project.freeze', 'haskell-codspeed.cabal')}}
+        restore-keys: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-
+
+    - name: Build
+      run: cabal update && cabal build bench:example
+
+    - name: Run with a known profile folder
+      env:
+        CODSPEED_HS_SOURCE_FILE: bench/Example.hs
+      run: |
+        curl -fsSL https://codspeed.io/install.sh | bash
+        export PATH="$HOME/.codspeed/bin:$PATH"
+        mkdir -p "$GITHUB_WORKSPACE/profile"
+        codspeed run -m simulation --profile-folder "$GITHUB_WORKSPACE/profile" \
+          -- "$(cabal list-bin bench:example)" --pattern 'fib.1000' || true
+
+    - name: Compare against the known-good local profile
+      if: always()
+      run: |
+        cd "$GITHUB_WORKSPACE/profile" 2>/dev/null || { echo "no profile folder"; exit 0; }
+        {
+          echo '## Files'; ls -la
+          for f in *.out*; do
+            [ -f "$f" ] || continue
+            echo "## $f"
+            echo '### benchmark URIs (expect 2 + Metadata last)'
+            grep -E '^desc: Trigger: Client Request' "$f" | sed 's/.*Client Request: /  /' || echo '  NONE'
+            echo '### events / totals (expect 14 columns, non-zero)'
+            grep -m1 '^events:' "$f" || echo '  no events line'
+            grep -m1 '^totals:' "$f" || echo '  no totals line'
+            echo "### parts: $(grep -c '^part:' "$f" || echo 0)"
+          done
+          for l in valgrind*.log runner.log; do
+            [ -f "$l" ] && { echo "## $l"; tail -25 "$l"; }
+          done
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the profile
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: raw-profile
+        path: profile/
+        if-no-files-found: warn
+
   flamegraph:
     name: Cost-centre flamegraphs
     runs-on: ubuntu-latest
