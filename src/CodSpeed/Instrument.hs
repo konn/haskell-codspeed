@@ -46,7 +46,7 @@ module CodSpeed.Instrument (
 import CodSpeed.Instrument.Raw
 import CodSpeed.Instrument.RootFrame (withRootFrame)
 import CodSpeed.InstrumentHooks.Vendor (instrumentHooksCommit)
-import Control.Exception (bracket, finally, throwIO)
+import Control.Exception (bracket, throwIO)
 import Control.Monad (unless, when)
 import Data.Char (toLower)
 import Data.Word (Word8)
@@ -162,36 +162,32 @@ withSession integration act =
             , sessionPid = pid
             , sessionInstrumented = instrumented
             }
-    -- Registered last, not first. See 'reportIntegration'. `finally` because the
-    -- body normally leaves by throwing ExitCode.
-    act sess `finally` reportIntegration sess integration
+    -- Before the benchmarks, per the documented lifecycle. See
+    -- 'reportIntegration' for why it briefly was not.
+    reportIntegration sess integration
+    act sess
   where
     acquire = c_init
     release hooks = unless (hooks == nullPtr) (c_deinit hooks)
 
 {- | Tell CodSpeed which integration produced these results.
 
-__Must run after the benchmarks, never before.__ Under the CPU-simulation
-instrument this is a @CALLGRIND_DUMP_STATS_AT@, and the runner starts Valgrind
-with @--instr-atstart=no@. Issuing a dump while instrumentation is still off
-leaves Callgrind in a state where @CALLGRIND_START_INSTRUMENTATION@ never takes
-effect again, so every subsequent measurement records zero.
+Called once, before any benchmark, as @CUSTOM_HARNESS.md@ specifies.
 
-Nothing reports an error when that happens. The benchmarks run, the profile is
-written with all the right benchmark URIs in it, every return code is 0, the
-runner uploads happily and the job goes green — and the backend rejects the run
-with "this run could not be processed", because every cost in it is zero.
+This was briefly moved to /after/ the benchmarks, on a local measurement that
+appeared to show a dump issued before @CALLGRIND_START_INSTRUMENTATION@ leaving
+Callgrind unable to instrument anything afterwards — @totals: 0@ with the call
+first, non-zero with it last. That measurement does not survive contact with
+CodSpeed's own example: built and run through the identical CI pipeline,
+@instrument-hooks@'s @example\/main.c@ calls this first, its metadata lands in
+@part: 1@ with @totals: 0@, and @part: 2@ still accumulates 288,719,342 @Ir@ —
+on the same @callgrind-3.26.0.codspeed6@, on the same runner image. So the dump
+does not poison later instrumentation, and the probe that said otherwise was
+measuring something else.
 
-Measured, on CodSpeed's own Valgrind fork, two identical benchmarks differing
-only in when this call happens:
-
-@
-set_integration first:  totals: 0
-set_integration last:   totals: 6000008
-@
-
-Upstream's @example\/main.c@ calls it first, which is where the original ordering
-came from.
+The ordering is not cosmetic. Every profile CodSpeed is known to accept carries
+its metadata part first; ours carried it last, which is one of the few structural
+differences between our profile and a working one.
 -}
 reportIntegration :: Session -> Integration -> IO ()
 reportIntegration sess integration
@@ -206,9 +202,20 @@ data Options = Options
   { optRootFrame :: !Bool
   {- ^ Wrap the body in a @__codspeed_root_frame__@ C frame.
 
-  Off by default. It buys a tidy flamegraph root at the cost of an RTS in-call
-  per benchmark, which moves the body onto a fresh bound thread and so puts it
-  out of reach of @System.Timeout.timeout@. See "CodSpeed.Instrument.RootFrame".
+  Costs an RTS in-call per benchmark, which moves the body onto a fresh bound
+  thread and so puts it out of reach of @System.Timeout.timeout@. See
+  "CodSpeed.Instrument.RootFrame".
+
+  The in-call happens /inside/ the measurement window, so @rts_lock@ and
+  bound-thread setup are counted. That is deliberate and unavoidable: Callgrind
+  only records calls made after @CALLGRIND_START_INSTRUMENTATION@, so a frame
+  entered before the window opens is invisible to it. Entering it beforehand —
+  which is what this did until the profile was actually read — produced a run
+  with the flag on and no @__codspeed_root_frame__@ anywhere in the output.
+
+  The cost is a fixed, deterministic offset, of the same kind as any other
+  harness overhead inside the window. Upstream's own example pays it the same
+  way.
   -}
   , optPerformGC :: !Bool
   {- ^ Run a major GC immediately before opening the window. On by default.
@@ -243,12 +250,15 @@ any input it depends on should already be evaluated before this is called.
 benchmarkWith :: Options -> Session -> String -> IO () -> IO ()
 benchmarkWith opts sess uri act
   | not (sessionInstrumented sess) = act
-  | otherwise = wrap $ do
+  | otherwise = do
       when (optPerformGC opts) performGC
       -- Everything from here to c_stopBenchmark is counted. The rc check is a
       -- couple of instructions and buys us not reporting a bogus measurement.
+      --
+      -- `wrap` is inside the window rather than around it, because Callgrind
+      -- only sees calls made after instrumentation starts. See 'optRootFrame'.
       rc <- c_startBenchmark hooks
-      when (rc == 0) act
+      when (rc == 0) (wrap act)
       stopRC <- c_stopBenchmark hooks
       checkRC "start_benchmark" rc
       checkRC "stop_benchmark" stopRC

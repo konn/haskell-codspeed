@@ -80,14 +80,14 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
-  # Diagnostic. Reproducing CI locally -- CodSpeed's own Valgrind fork, the exact
-  # argument list from src/executor/valgrind/measure.rs -- yields a complete and
-  # correct profile: every benchmark URI, metadata last, all fourteen event
-  # columns, non-zero totals. CodSpeed nonetheless reports no benchmark results.
+  # Diagnostic, and now also a falsification test.
   #
-  # The untested differences are x86_64 versus the arm64 used locally, and the
-  # wrapping `codspeed run` puts around valgrind. So capture what CI actually
-  # produces and diff it against the known-good profile.
+  # set_integration used to run last, because a local probe appeared to show that
+  # issuing its CALLGRIND_DUMP_STATS_AT before CALLGRIND_START_INSTRUMENTATION
+  # left callgrind unable to instrument anything afterwards (totals: 0). It runs
+  # first again, per the documented lifecycle -- so if that probe was right, the
+  # totals printed below are all zero, and if it was wrong they are not. No
+  # inference required.
   #
   # Runs the CLI directly only because `codspeed run` accepts --profile-folder and
   # the action does not. Delete once this is settled.
@@ -123,21 +123,23 @@ jobs:
         codspeed run -m simulation --profile-folder "$GITHUB_WORKSPACE/profile" \
           -- "$(cabal list-bin bench:example)" --pattern 'fib.1000' || true
 
-    - name: Compare against the known-good local profile
+    - name: Report the profile's shape
       if: always()
       run: |
         cd "$GITHUB_WORKSPACE/profile" 2>/dev/null || { echo "no profile folder"; exit 0; }
         {
-          echo '## Files'; ls -la
+          echo '## Files'
+          echo '(an environment-<pid>.json here would be a difference from the'
+          echo 'C profile the backend accepted -- expect none)'
+          ls -la
           for f in *.out*; do
             [ -f "$f" ] || continue
             echo "## $f"
-            echo '### benchmark URIs (expect 2 + Metadata last)'
-            grep -E '^desc: Trigger: Client Request' "$f" | sed 's/.*Client Request: /  /' || echo '  NONE'
-            echo '### events / totals (expect 14 columns, non-zero)'
-            grep -m1 '^events:' "$f" || echo '  no events line'
-            grep -m1 '^totals:' "$f" || echo '  no totals line'
-            echo "### parts: $(grep -c '^part:' "$f" || echo 0)"
+            echo '### part order and cost'
+            echo '(Metadata should be part 1; benchmark totals must be non-zero)'
+            grep -E '^(part:|desc: Trigger: Client Request|totals:)' "$f" \
+              | sed 's/^desc: Trigger: Client Request: /  trigger: /' || echo '  NONE'
+            echo "### root frames: $(grep -c '^fn=__codspeed_root_frame__' "$f" || echo 0)"
           done
           for l in valgrind*.log runner.log; do
             [ -f "$l" ] && { echo "## $l"; tail -25 "$l"; }
@@ -155,50 +157,37 @@ jobs:
   # Differential test, and the only one left that does not require guessing at a
   # closed backend.
   #
-  # CI's Haskell profile is demonstrably correct -- six parts, every benchmark
-  # URI, metadata last, non-zero totals across all fourteen event columns, valgrind
-  # and program both exiting 0 -- and CodSpeed still reports no benchmark results.
-  # So run upstream's own example/main.c, which is C, is not this project, and uses
-  # the documented API verbatim, through the identical pipeline.
+  # Diffing CI's rejected Haskell profile against the C profile the backend
+  # accepted leaves exactly four structural differences. Each variant below
+  # reproduces one of them in upstream's own example/main.c -- the single program
+  # known to have recorded here (example_benchmark, 211.8 ms) -- changing nothing
+  # else. Uploads from separate jobs merge into one run, so whichever URIs come
+  # back name the difference that is fatal:
   #
-  #   it also records nothing  -> the constraint is on custom integrations or on
-  #                               this repository, not on anything written here
-  #   it records results       -> our profile differs from a working one in some
-  #                               way, and the two can be diffed directly
+  #   meta_last   metadata part after the benchmarks (ours) vs first (upstream's)
+  #   no_root     no __codspeed_root_frame__ frame in the profile at all
+  #   no_markers  no instrument_hooks_add_marker calls
+  #   env_json    an environment-<pid>.json in the profile folder
+  #
+  # `control` renames only the URI, and must record: it is what makes a missing
+  # URI elsewhere mean something.
   upstream-example:
     name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
-    # One variable changed per job, from a baseline that is known to work:
-    # upstream's example/main.c recorded `example_benchmark` at 211.8 ms.
-    #
-    # A five-shape URI probe recorded nothing at all, including a bare name that
-    # ought to have behaved exactly like the baseline -- so more than the URI was
-    # different, and changing several things at once proved uninformative.
-    # Uploads from separate jobs merge into one run, so whichever URIs come back
-    # identify which single change is fatal.
     strategy:
       fail-fast: false
       matrix:
-        variant: [verbatim]
+        variant: [control, meta_last, no_root, no_markers, env_json]
     permissions:
       contents: read
       id-token: write
     steps:
     - uses: actions/checkout@v4
 
-    # Upstream's example recorded fine (`example_benchmark`, 211.8 ms) while the
-    # Haskell suite records nothing, so custom integrations work here and the
-    # difference is ours. The most visible one is the URI: a bare name versus
-    # bench/Example.hs::fib::1000::leaky.
-    #
-    # One C program, several URI shapes, one round-trip. Whichever shapes come
-    # back name the constraint.
     # Two hand-written probes in a row failed at their own control, so stop
-    # rewriting upstream's example and mutate it instead. main.c verbatim is the
-    # one program known to have recorded here (example_benchmark, 211.8 ms);
-    # each variant changes a single token in it, and the applied diff is printed
-    # so the mutation can be checked rather than assumed.
-    - name: Build from upstream's example, mutating one token
+    # rewriting upstream's example and mutate it instead. The applied diff is
+    # printed so the mutation can be checked rather than assumed.
+    - name: Build from upstream's example, mutating one thing
       env:
         VARIANT: ${{matrix.variant}}
       run: |
@@ -206,14 +195,24 @@ jobs:
         curl -fsSL -o main.c \
           https://raw.githubusercontent.com/CodSpeedHQ/instrument-hooks/main/example/main.c
         cp main.c orig.c
+        # Every variant is identifiable by its URI, and `control` isolates the
+        # rename itself.
+        sed -i "s|\"example_benchmark\"|\"probe_$VARIANT\"|" main.c
+        SETINT='instrument_hooks_set_integration(hooks, "custom-integration", "1.0.0");'
         case "$VARIANT" in
-          verbatim) ;;
-          uri_bare)
-            sed -i 's|"example_benchmark"|"probe_uri_bare"|' main.c ;;
-          uri_path)
-            sed -i 's|"example_benchmark"|"bench/Example.hs::probe::uri_path"|' main.c ;;
-          integration_name)
-            sed -i 's|"custom-integration"|"haskell-codspeed"|; s|"example_benchmark"|"probe_integration_name"|' main.c ;;
+          control) ;;
+          meta_last)
+            # Only the final deinit is at two-space indent; the error paths are
+            # at four, so this anchors on the successful exit.
+            sed -i "/$SETINT/d" main.c
+            sed -i "s|^  instrument_hooks_deinit(hooks);|  $SETINT\n  instrument_hooks_deinit(hooks);|" main.c ;;
+          no_root)
+            sed -i 's|__codspeed_root_frame__example(example_function);|example_function();|' main.c ;;
+          no_markers)
+            sed -i '/instrument_hooks_add_marker(hooks, pid, MARKER_TYPE_BENCHMARK_START,/,+1d' main.c
+            sed -i '/instrument_hooks_add_marker(hooks, pid, MARKER_TYPE_BENCHMARK_END,/,+1d' main.c ;;
+          env_json)
+            sed -i 's|^  instrument_hooks_deinit(hooks);|  instrument_hooks_set_environment(hooks, "haskell", "ghc-version", "9.12.4");\n  instrument_hooks_write_environment(hooks, pid);\n  instrument_hooks_deinit(hooks);|' main.c ;;
         esac
         echo "### mutation applied:"; diff orig.c main.c || true
         gcc -O1 -o example main.c \
@@ -222,29 +221,33 @@ jobs:
           -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-parameter \
           -Wno-unused-but-set-variable -Wno-type-limits -Wno-format -Wno-format-security
 
-    # Via the CLI rather than the action, so --profile-folder can capture what a
-    # *working* upload looks like. The Haskell profile is already captured by the
-    # profile-dump job; diffing the two is what remains.
+    # Via the CLI rather than the action, so --profile-folder keeps the profile
+    # each variant produced -- the upload result says whether the backend liked
+    # it, and the folder says what it was actually given.
     - name: Measure it, keeping the profile
+      env:
+        VARIANT: ${{matrix.variant}}
       run: |
         curl -fsSL https://codspeed.io/install.sh | bash
         export PATH="$HOME/.codspeed/bin:$PATH"
         mkdir -p "$GITHUB_WORKSPACE/cprofile"
         codspeed run -m simulation --profile-folder "$GITHUB_WORKSPACE/cprofile" \
           -- /tmp/ex/example || true
-        echo '## working C profile' | tee -a "$GITHUB_STEP_SUMMARY"
-        ls -la "$GITHUB_WORKSPACE/cprofile" | tee -a "$GITHUB_STEP_SUMMARY"
-        for f in "$GITHUB_WORKSPACE"/cprofile/*.out; do
-          [ -f "$f" ] || continue
-          echo "### $(basename "$f")"
-          grep -E '^(part:|desc: Trigger|events:|summary:|totals:)' "$f" | head -20
-        done | tee -a "$GITHUB_STEP_SUMMARY"
+        {
+          echo "## $VARIANT"
+          ls -la "$GITHUB_WORKSPACE/cprofile"
+          for f in "$GITHUB_WORKSPACE"/cprofile/*.out; do
+            [ -f "$f" ] || continue
+            echo "### $(basename "$f")"
+            grep -E '^(part:|desc: Trigger|totals:)' "$f" | head -20
+          done
+        } | tee -a "$GITHUB_STEP_SUMMARY"
 
-    - name: Upload the working C profile
+    - name: Upload the profile
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: c-profile
+        name: c-profile-${{matrix.variant}}
         path: cprofile/
         if-no-files-found: warn
 
