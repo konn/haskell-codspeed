@@ -1,0 +1,177 @@
+cabal-version: 3.4
+name: haskell-codspeed
+version: 0.1.0.0
+build-type: Simple
+category: Development, Performance, Benchmarking
+synopsis: Run GHC benchmarks under CodSpeed
+description: Please see the README on GitHub at <https://github.com/konn/haskell-codspeed#readme>
+license: BSD-3-Clause
+license-file: LICENSE
+author: Hiromi ISHII
+maintainer: konn.jinro_at_gmail.com
+copyright: "2026 (c) Hiromi ISHII"
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+extra-source-files:
+  cbits/codspeed_shim.h
+  vendor/instrument-hooks/COMMIT
+  vendor/instrument-hooks/README.md
+  vendor/instrument-hooks/includes/*.h
+
+bug-reports: https://github.com/konn/haskell-codspeed/issues
+homepage: https://github.com/konn/haskell-codspeed#readme
+
+source-repository head
+  type: git
+  location: https://github.com/konn/haskell-codspeed.git
+
+common defaults
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+  default-language: GHC2021
+  build-depends: base >=4.18 && <5
+
+-- The vendored CodSpeed C library, isolated in its own component purely so its
+-- warning suppressions do not leak onto our own sources. cc-options lives in
+-- BuildInfo, so a separate component is the only scoping mechanism Cabal has.
+library instrument-hooks
+  import: defaults
+  visibility: private
+  hs-source-dirs: vendor-hs
+  exposed-modules: CodSpeed.InstrumentHooks.Vendor
+  include-dirs: vendor/instrument-hooks/includes
+  c-sources: vendor/instrument-hooks/dist/core.c
+  install-includes:
+    callgrind.h
+    compat.h
+    core.h
+    valgrind.h
+    zig.h
+
+  -- Upstream's documented set (CUSTOM_HARNESS.md), plus
+  -- -Wno-incompatible-pointer-types: core.c passes uintptr_t* where zig.h wants
+  -- uint64_t*, which only differ where uint64_t is unsigned long long.
+  cc-options:
+    -Wno-format
+    -Wno-format-security
+    -Wno-incompatible-pointer-types
+    -Wno-type-limits
+    -Wno-unused-but-set-variable
+    -Wno-unused-parameter
+    -Wno-unused-variable
+
+library
+  import: defaults
+  hs-source-dirs: src
+  -- cabal-gild: discover src --exclude=src/**/Internal.hs
+  exposed-modules:
+    CodSpeed.Instrument
+    CodSpeed.Instrument.Raw
+    CodSpeed.Instrument.RootFrame
+    CodSpeed.RTS.Eventlog
+    CodSpeed.RTS.Preflight
+    CodSpeed.RTS.Stats
+
+  -- cabal-gild: discover src --include=src/**/Internal.hs
+  other-modules:
+  include-dirs:
+    cbits
+    vendor/instrument-hooks/includes
+
+  c-sources: cbits/codspeed_shim.c
+  build-depends: haskell-codspeed:instrument-hooks
+
+-- The tasty-bench glue is a separate component so the core library stays free of
+-- a tasty dependency; a project driving CodSpeed from its own harness needs only
+-- the main library.
+library tasty-bench-codspeed
+  import: defaults
+  visibility: public
+  hs-source-dirs: tasty-bench
+  exposed-modules:
+    Test.Tasty.Bench.CodSpeed
+    Test.Tasty.Bench.CodSpeed.Internal
+
+  -- The tasty-bench bound is load-bearing rather than habitual: the Internal
+  -- module mirrors that package's unexported result encoding field-for-field, so
+  -- widening it means re-checking the mirrors against the new source.
+  build-depends:
+    haskell-codspeed,
+    tagged,
+    tasty >=1.5 && <1.6,
+    tasty-bench >=0.5 && <0.6,
+    transformers,
+
+-- Exercises the drop-in runner end to end. Also the thing to point `codspeed run`
+-- at when checking the integration against a real runner.
+benchmark example
+  import: defaults
+  type: exitcode-stdio-1.0
+  hs-source-dirs: bench
+  main-is: Example.hs
+  ghc-options:
+    -O2
+    -rtsopts
+    "-with-rtsopts=-A32m -T"
+
+  build-depends:
+    deepseq,
+    haskell-codspeed:tasty-bench-codspeed,
+
+test-suite haskell-codspeed-test
+  import: defaults
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Test.hs
+  -- -T so CodSpeed.RTS.Stats has something to read; without it getRTSStats
+  -- throws and the stats tests would only ever exercise the disabled path.
+  ghc-options:
+    -threaded
+    -rtsopts
+    -O2
+    "-with-rtsopts=-N -T"
+
+  -- cabal-gild: discover test --exclude=test/Test.hs
+  other-modules:
+    BenchEncodingSpec
+    InstrumentSpec
+    PreflightSpec
+    StatsSpec
+
+  -- Deliberately not tasty-discover: test/Test.hs has to force single-threaded
+  -- execution before the runner parses options, which a generated main cannot do.
+  build-depends:
+    haskell-codspeed,
+    haskell-codspeed:tasty-bench-codspeed,
+    tasty,
+    tasty-hunit,
+
+test-suite haskell-codspeed-doctest
+  import: defaults
+  type: exitcode-stdio-1.0
+  hs-source-dirs: doctest
+  main-is: DocTest.hs
+  -- doctest-parallel names the package as a string and loads it at runtime, so
+  -- the dependency is real but invisible to -Wunused-packages.
+  ghc-options:
+    -threaded
+    -rtsopts
+    -O2
+    -with-rtsopts=-N
+    -Wno-unused-packages
+
+  build-depends:
+    doctest-parallel,
+    haskell-codspeed,

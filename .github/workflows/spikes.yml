@@ -1,0 +1,121 @@
+name: Measurement spikes
+
+# The experiments the design depends on, run on real x86-64 hardware.
+#
+# They live in their own manually-triggered workflow rather than the normal CI
+# because they are slow (Valgrind is ~200x), they answer design questions rather
+# than guarding against regressions, and their output is meant to be read.
+#
+# The development host is aarch64 macOS, where two of these cannot be answered:
+# Valgrind segfaults under x86-64 emulation, and CodSpeed's simulation instrument
+# is Linux-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: Runs used to measure the determinism noise floor
+        default: "5"
+        required: false
+
+jobs:
+  s0-symbols:
+    name: S0 - ELF symbol visibility
+    runs-on: ubuntu-latest
+    container: haskell:9.12.4-slim-bookworm
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install valgrind
+      run: |
+        apt-get update -qq
+        apt-get install -y -qq valgrind binutils python3
+
+    # Settled locally on GHC 9.12.4 for both linux/arm64 and linux/amd64: there
+    # are zero STT_NOTYPE symbols with a non-zero size, and local procs already
+    # carry .type (559 LOCAL FUNC with size>0 on amd64). The retype is therefore
+    # a no-op and is not in the build.
+    #
+    # This job exists to keep that honest across GHC upgrades: if a future
+    # version stops emitting .type for local procs, Callgrind will silently start
+    # reporting hex addresses instead of names, and this is what would catch it.
+    # ci/spike-s0-elf-retype.sh drives its own container; here we are already
+    # inside the image, so the same probe is inlined rather than nested.
+    - name: Symbol census and determinism
+      env:
+        REPEATS: ${{github.event.inputs.repeats || '5'}}
+      run: |
+        set -eu
+        mkdir -p /tmp/w && cd /tmp/w
+        {
+          echo "module Main (main) where"
+          echo "import System.Environment (getArgs)"
+          for i in $(seq 0 29); do
+            echo "{-# NOINLINE h$i #-}"
+            echo "h$i :: Int -> Int -> Int"
+            echo "h$i n acc | n <= 0 = acc"
+            echo "          | otherwise = h$(( (i+1) % 30 )) (n-1) ((acc*$((i*2+3)) + $i) \`rem\` 1000003)"
+          done
+          echo "main :: IO ()"
+          echo "main = do { as <- getArgs; print (h0 (length as + 400000) 1) }"
+        } > Bench.hs
+        ghc -O2 -fproc-alignment=64 -g3 -o bench Bench.hs -outputdir out >/dev/null
+
+        echo "== symbol census =="
+        readelf -sW bench | awk 'NR>3 && ($4=="FUNC"||$4=="NOTYPE") {
+          printf "%s %s %s\n", $5, $4, ($3+0>0?"(size>0)":"(size=0)") }' \
+          | sort | uniq -c | sort -rn
+
+        sized_notype=$(readelf -sW bench | awk 'NR>3 && $4=="NOTYPE" && $3+0>0' | wc -l)
+        echo "sized NOTYPE symbols: $sized_notype"
+        if [ "$sized_notype" -gt 0 ]; then
+          echo "::warning::GHC emitted $sized_notype sized STT_NOTYPE symbols; Valgrind drops these, so ci/elf-retype-procs.py may be needed again"
+        fi
+
+        run() {
+          valgrind -q --tool=callgrind --cache-sim=yes \
+            --I1=32768,8,64 --D1=32768,8,64 --LL=8388608,16,64 \
+            --read-inline-info=yes --compress-strings=no --combine-dumps=yes \
+            --dump-line=no "$@" --callgrind-out-file="/tmp/w/$TAG.out" \
+            ./bench >/dev/null 2>"/tmp/w/$TAG.log"
+        }
+
+        echo
+        echo "== S1b: determinism of whole-process Ir over $REPEATS runs =="
+        lo=""; hi=""
+        for i in $(seq 1 "$REPEATS"); do
+          TAG="det$i" run
+          v=$(awk '/^totals:/{print $2}' "/tmp/w/det$i.out")
+          echo "  run $i: Ir=$v"
+          [ -z "$lo" ] && { lo=$v; hi=$v; }
+          [ "$v" -lt "$lo" ] && lo=$v
+          [ "$v" -gt "$hi" ] && hi=$v
+        done
+        echo "  spread: $((hi - lo)) Ir  (min=$lo max=$hi)"
+        echo "  NOTE: this is whole-process, so it includes dynamic linking and"
+        echo "        libc startup. Per-leaf instrumentation brackets only the"
+        echo "        measured region and should be tighter."
+
+        echo
+        echo "== --pop-on-jump: does it change the shadow stack? =="
+        for opt in "" "--pop-on-jump=yes"; do
+          TAG="pop$(echo "$opt" | tr -cd 'a-z')" run $opt
+          n=$(grep -c 'call stack enlarged' "/tmp/w/$TAG.log" || true)
+          sz=$(stat -c %s "/tmp/w/$TAG.out")
+          printf '  %-18s stack_enlarged=%-4s out_bytes=%s\n' "${opt:-<none>}" "$n" "$sz"
+        done
+
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    container: haskell:9.12.4-slim-bookworm
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cabal update && cabal build all
+    - name: Test
+      run: cabal test haskell-codspeed-test --test-show-details=direct
+    # doctest-parallel needs the GHC environment file, which `cabal test` does
+    # not write in time (doctest-parallel#22).
+    - name: Doctests
+      run: cabal run haskell-codspeed-doctest

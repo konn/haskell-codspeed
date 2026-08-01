@@ -1,0 +1,7 @@
+packages: **.cabal
+tests: True
+benchmarks: True
+write-ghc-environment-files: always
+-- The vendored CodSpeed C library lives in a private sublibrary, so the package
+-- has two library components. HLS loads them together and needs this to do so.
+multi-repl: True
