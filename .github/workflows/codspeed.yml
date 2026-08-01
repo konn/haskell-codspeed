@@ -69,6 +69,34 @@ jobs:
         test -x "$(cabal list-bin bench:example)"
         test -x "$(cabal list-bin codspeed-hs-rewrite)"
 
+    # The side-car half of the two-run merge, and it has to live in this job:
+    # the rewriter reads these profiles from inside the measured command, which
+    # is the only moment the callgrind file exists and is still ours.
+    #
+    # Native, not under Valgrind, and that is fine -- nothing timed is taken from
+    # it. What the merge uses is the cost-centre tree and its allocation weights,
+    # both exactly deterministic, so a noisy shared runner cannot leak into the
+    # result through a channel nobody reads.
+    #
+    # -prof is a different program (two extra words on every heap object), which
+    # is exactly why it is a side-car rather than the thing measured.
+    - name: Build and run the -fprof-late side-car
+      run: |
+        cabal build bench:example \
+          --enable-profiling --enable-library-profiling \
+          --profiling-detail=late-toplevel
+        BIN=$(cabal list-bin bench:example \
+          --enable-profiling --enable-library-profiling \
+          --profiling-detail=late-toplevel)
+        # One iteration per leaf, the same as the instrumented run does, so the
+        # two are comparable rather than merely similar.
+        CODSPEED_HS_DETERMINISTIC=1 \
+        CODSPEED_HS_CCS_DIR="$GITHUB_WORKSPACE/ccs" \
+        CODSPEED_HS_SIDECAR="$GITHUB_WORKSPACE/sidecar-native.csv" \
+          "$BIN"
+        echo "## cost-centre profiles for the merge" >>"$GITHUB_STEP_SUMMARY"
+        ls "$GITHUB_WORKSPACE/ccs" >>"$GITHUB_STEP_SUMMARY"
+
     # Simulation rather than walltime: it is deterministic, and a GitHub-hosted
     # runner is too noisy for walltime to mean much. Note this makes the run
     # roughly 200x slower than native, which is fine for a suite this size.
@@ -85,6 +113,10 @@ jobs:
         # Per-benchmark allocation, written by the suite itself. Uploaded below;
         # this is the metric CodSpeed has no channel for.
         CODSPEED_HS_SIDECAR: ${{github.workspace}}/allocation.csv
+        # Makes the chained rewriter merge rather than only decode symbols.
+        # Without it Main.$wgo never appears: at -O2 it has no ELF frame, and its
+        # cost surfaces under thunk-entry and update-frame machinery instead.
+        CODSPEED_HS_CCS_DIR: ${{github.workspace}}/ccs
       with:
         mode: simulation
         run: ${{steps.bin.outputs.path}} && ${{steps.bin.outputs.rewrite}}
