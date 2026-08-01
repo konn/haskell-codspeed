@@ -186,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [verbatim, uri_bare, uri_path, integration_name]
+        variant: [verbatim]
     permissions:
       contents: read
       id-token: write
@@ -229,11 +229,31 @@ jobs:
           -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-parameter \
           -Wno-unused-but-set-variable -Wno-type-limits -Wno-format -Wno-format-security
 
-    - name: Measure it
-      uses: CodSpeedHQ/action@v5
+    # Via the CLI rather than the action, so --profile-folder can capture what a
+    # *working* upload looks like. The Haskell profile is already captured by the
+    # profile-dump job; diffing the two is what remains.
+    - name: Measure it, keeping the profile
+      run: |
+        curl -fsSL https://codspeed.io/install.sh | bash
+        export PATH="$HOME/.codspeed/bin:$PATH"
+        mkdir -p "$GITHUB_WORKSPACE/cprofile"
+        codspeed run -m simulation --profile-folder "$GITHUB_WORKSPACE/cprofile" \
+          -- /tmp/ex/example || true
+        echo '## working C profile' | tee -a "$GITHUB_STEP_SUMMARY"
+        ls -la "$GITHUB_WORKSPACE/cprofile" | tee -a "$GITHUB_STEP_SUMMARY"
+        for f in "$GITHUB_WORKSPACE"/cprofile/*.out; do
+          [ -f "$f" ] || continue
+          echo "### $(basename "$f")"
+          grep -E '^(part:|desc: Trigger|events:|summary:|totals:)' "$f" | head -20
+        done | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the working C profile
+      if: always()
+      uses: actions/upload-artifact@v4
       with:
-        mode: simulation
-        run: /tmp/ex/example
+        name: c-profile
+        path: cprofile/
+        if-no-files-found: warn
 
   flamegraph:
     name: Cost-centre flamegraphs
