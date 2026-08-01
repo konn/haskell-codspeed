@@ -109,6 +109,7 @@ import Data.Version (showVersion)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getProgName, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
+import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Info (fullCompilerVersion)
 import Test.Tasty (Timeout (..), adjustOption, mkTimeout, testGroup)
@@ -410,6 +411,7 @@ defaultMainWith cfg benchmarks =
   withSession (configIntegration cfg) $ \sess -> do
     _ <- preflight (sessionMode sess)
     prefix <- resolvePrefix (configSourcePath cfg)
+    announce sess prefix
     reportBuildEnvironment sess
     installSignalHandlers
 
@@ -437,6 +439,31 @@ defaultMainWith cfg benchmarks =
           Nothing -> exitFailure
           Just act -> act >>= \ok -> if ok then exitSuccess else exitFailure
       )
+
+{- | Say on stderr whether this run is actually being measured.
+
+Silence here is the failure mode worth guarding against. When the runner is not
+detected the suite still runs, still prints results and still exits zero — it has
+simply fallen back to @tasty-bench@'s own timing loop, and nothing is reported to
+CodSpeed. That looks identical to success from CI, and the only symptom is an
+empty run on the CodSpeed side, discovered much later.
+
+Printing the URI prefix too, since a wrong one is the other quiet failure: the
+benchmarks are reported, just under names that do not match the baseline.
+-}
+announce :: Session -> String -> IO ()
+announce sess prefix
+  | isInstrumented sess =
+      hPutStrLn stderr $
+        "[codspeed] measuring: mode="
+          <> show (sessionMode sess)
+          <> ", uri prefix="
+          <> prefix
+  | otherwise =
+      hPutStrLn stderr $
+        "[codspeed] NOT measuring: no runner detected, falling back to "
+          <> "tasty-bench's own timing loop. Nothing will be reported to CodSpeed. "
+          <> "(Run under `codspeed run` to measure.)"
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
