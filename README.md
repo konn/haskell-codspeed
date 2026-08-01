@@ -129,12 +129,33 @@ that actually runs. The profile is re-rooted at the benchmark using the cost-cen
 stack captured when it starts, which strips the dozen-odd frames of `main` and tasty
 scheduling above it.
 
-This needs nothing from CodSpeed and works today. Getting the same shape *inside*
-CodSpeed's own flamegraphs is a different problem: those come from Callgrind, whose
-frames are ELF symbols, and a cost centre is not a symbol — `-fprof-late` emits
-inline `pushCostCentre` and static data, no code label. So no combination of GHC or
-Valgrind flags can put one there; the profile would have to be authored, which rests
-on an unverified assumption about CodSpeed's closed backend.
+This needs nothing from CodSpeed and works today.
+
+## Legible frames inside CodSpeed
+
+CodSpeed's own flamegraph frames come from the ELF symbol table, so a GHC binary
+renders as `ghczminternal_GHCziInternalziNum_zdfNumIntzuzdczp_info`.
+`codspeed-hs-rewrite` decodes them in place, after the benchmark and before the
+upload:
+
+```bash
+codspeed run -m simulation -- bash -c './bench && codspeed-hs-rewrite'
+```
+
+It is a pure rename — only `fn=`/`cfn=` payloads change, every cost line is copied
+through, so totals are preserved by construction. On a real CI profile: 1724 frames
+renamed, totals byte-identical. The flamegraph then reads
+`GHC.Internal.Num.$fNumInt_$c+`, `GHC.Internal.List.reverse1`, `GHC.Types.:`.
+
+That also settles a question this package could not answer from outside: **the
+backend renders the names you author.** They exist nowhere in the binary.
+
+What it does *not* give you is cost centres. A cost centre is not a symbol —
+`-fprof-late` emits inline `pushCostCentre` and static data, no code label — so at
+`-O2` the lazy `fib`'s loop has no frame of its own in the ELF graph; its cost lands
+in generic-apply and thunk-entry code. Recovering that means grafting the
+cost-centre tree onto the measured costs, which is in progress. Until then the
+honest split is: **CodSpeed for the number, the folded stacks above for the shape.**
 
 ## Cooperating with the rest of the toolchain
 

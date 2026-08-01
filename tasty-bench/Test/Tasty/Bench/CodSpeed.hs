@@ -153,17 +153,22 @@ data Config = Config
   , configRootFrame :: Bool
   {- ^ Wrap each body in a @__codspeed_root_frame__@ C frame.
 
-  __On by default, and turning it off means the run is not recorded.__
-  @CUSTOM_HARNESS.md@ says the benchmarked code must run inside such a frame, and
-  it was initially read as a flamegraph nicety on the evidence that CodSpeed's
-  Valgrind fork mentions the name only in comments about re-parenting. A probe
-  settled it: upstream's example with the frame call replaced by a direct call,
-  one token and nothing else, recorded nothing, alongside a control that
-  recorded.
+  On by default, but /not/ because a run without it is rejected — it is not.
+  CodSpeed's own @exec-harness@ has no root frame anywhere and records fine.
+
+  It is on because it is what roots the flamegraph. In CodSpeed's rendering of
+  this suite the tree hangs off the benchmark URI through
+  @hs_codspeed_run_action@ and @rts_inCall@, which is this frame; every language
+  integration CodSpeed ships arranges one, down to @pytest-codspeed@ naming a
+  nested Python closure @__codspeed_root_frame__@.
 
   It is not free: see "CodSpeed.Instrument.RootFrame". The body runs on a fresh
   bound thread via an RTS in-call, which puts it out of reach of
   @System.Timeout.timeout@.
+
+  (An earlier version of this said omitting it was fatal, citing a probe. That
+  probe's legs shared one CodSpeed run part and overwrote each other, so its
+  profile was never read. See @README.md@ on @GH_MATRIX@.)
   -}
   , configSidecarPath :: Maybe FilePath
   {- ^ Where to write per-benchmark allocation, if anywhere.
@@ -505,7 +510,7 @@ defaultMainWith cfg benchmarks =
   withSession (configIntegration cfg) $ \sess -> do
     _ <- preflight (sessionMode sess)
     component <- resolveComponent (configComponent cfg)
-    announce sess component
+    announce sess (configIntegration cfg) component
     reportBuildEnvironment sess
     installSignalHandlers
 
@@ -546,14 +551,19 @@ Printing the component too, since a wrong one is the other quiet failure: the
 benchmarks are reported, just under names that do not match the baseline, so
 every one of them looks new.
 -}
-announce :: Session -> String -> IO ()
-announce sess component
+announce :: Session -> Integration -> String -> IO ()
+announce sess integration component
   | isInstrumented sess =
       hPutStrLn stderr $
         "[codspeed] measuring: component="
           <> component
           <> ", mode="
           <> mode
+          <> ", integration="
+          <> integrationName integration
+          <> " "
+          <> integrationVersion integration
+          <> borrowedWarning
   | otherwise =
       hPutStrLn stderr $
         "[codspeed] NOT measuring: no runner detected, falling back to "
@@ -567,6 +577,19 @@ announce sess component
     mode = case sessionMode sess of
       CS.NotInstrumented -> "unreported"
       m -> show m
+
+    -- The name is borrowed to obtain a flamegraph at all (see 'defaultConfig').
+    -- Said out loud on every run, because a misattribution nobody is reminded of
+    -- is one that quietly becomes permanent, and this one is meant to end as soon
+    -- as CodSpeed registers the real name.
+    borrowedWarning
+      | integrationName integration == "haskell-codspeed" = ""
+      | otherwise =
+          "\n[codspeed] note: reporting as \""
+            <> integrationName integration
+            <> "\" rather than \"haskell-codspeed\", because CodSpeed only builds a "
+            <> "flamegraph for integration names it knows. Set configIntegration to "
+            <> "change it."
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
