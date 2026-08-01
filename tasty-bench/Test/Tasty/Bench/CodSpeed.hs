@@ -191,9 +191,18 @@ Because otherwise there is no flamegraph, and a flamegraph is the point.
 
 CodSpeed decides whether to build a call graph by looking up the integration
 name, server-side. Under CPU simulation the @Metadata: \<name\> \<version\>@ client
-request is the /only/ identity a profile carries, and
-<https://codspeed.io/docs/instruments/cpu> lists profiling availability per named
-integration with minimum versions — a table this integration is not in.
+request is the /only/ identity a profile carries.
+
+The list is __curated, not first-party-only__, and it has been opened before for
+exactly this situation. @CodSpeedHQ\/codspeed@'s README carries
+@| Zig (community) | codspeed-zig | custom |@ — a personal fork, for an
+officially unsupported language — and its consumer @slunghq\/slung@ gets call
+graphs on every run at integration version @0.0.1@. So this is a registration
+this package can ask for rather than a wall.
+
+(The published table at <https://codspeed.io/docs/instruments/cpu> is /not/ that
+list: @codspeed-go@ and @codspeed-jvm@ both get call graphs and appear nowhere on
+it.)
 
 Measured, same binary and same profile, one token of the reported name apart:
 
@@ -213,9 +222,16 @@ attempted.
 symbols directly, which is what a GHC binary produces.
 
 __This is a misattribution and it is deliberate.__ Runs will show as produced by
-the C++ integration. The honest fix is for CodSpeed to add this integration to
-that table; until then the choice is a wrong name or no flamegraph. Set
-'configIntegration' to change it.
+the C++ integration. It should be temporary: the honest fix is to ask CodSpeed to
+register @haskell-codspeed@, which the Zig precedent above says is a real route.
+Set 'configIntegration' to change it.
+
+Worth knowing that the community norm is worse than asking. @wasm-bindgen@ and
+@cloudflare\/workers-rs@ both fabricate results under a borrowed first-party name,
+and the one other custom integration that hit this wall — @DavisVaughan\/cod@, for
+R — spent a commit log on it (@\"could it be lack of semver\"@, then a @noinline@ C
+function to give the symbolizer something to chew on), got nothing, and filed
+nothing. Nobody has reported it. That is the gap this package should close.
 
 == The version
 
