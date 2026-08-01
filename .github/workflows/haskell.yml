@@ -224,3 +224,36 @@ jobs:
         cabal-version: 3.14.2.0
         ghc-version: latest
     - run: cabal check
+
+  # This package carries a 2.5 MB amalgamated C file it did not write, and
+  # `cabal sdist` has no VCS awareness -- it ships what extra-source-files says
+  # and nothing else. A missing entry breaks only for people installing from a
+  # tarball, which is nobody who works on the repository.
+  #
+  # The failure mode is not theoretical: an unanchored `dist` rule in .gitignore
+  # already swallowed vendor/instrument-hooks/dist/core.c once. Everything built
+  # locally, every test passed, and the first CI run on a fresh clone died with
+  # "does not exist: vendor/instrument-hooks/dist/core.c". Same shape, later
+  # discovery.
+  sdist:
+    name: Build from an sdist tarball
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: haskell-actions/setup@v2
+      with:
+        cabal-version: 3.14.2.0
+        ghc-version: "9.12.4"
+
+    - name: Pack, unpack somewhere else, and build there
+      run: |
+        cabal update
+        cabal sdist -o "$RUNNER_TEMP/sdist"
+        cd "$RUNNER_TEMP/sdist"
+        tar xzf ./*.tar.gz
+        cd haskell-codspeed-*/
+        echo '## tarball contents (vendored C must be here)'
+        tar tzf ../*.tar.gz | grep -E 'vendor|cbits' | sort
+        # Not a plain `cabal build`: the point is that a consumer with none of
+        # this repository's checkout can compile the vendored C.
+        cabal build all
