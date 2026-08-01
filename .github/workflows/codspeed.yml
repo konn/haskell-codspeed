@@ -186,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [baseline, integration_last, path_uri, multi]
+        variant: [baseline, no_root_frame, path_uri, integration_last]
     permissions:
       contents: read
       id-token: write
@@ -213,37 +213,37 @@ jobs:
         #include <unistd.h>
         #include "core.h"
 
-        static volatile long sink;
-        static void work(int n) { for (long i = 0; i < n * 200000L; i++) sink += i; }
+        /* upstream's example defines this itself; core.h does not provide it */
+        #define CODSPEED_NOINLINE __attribute__((noinline))
 
-        __attribute__((noinline))
-        static void __codspeed_root_frame__probe(int n) { work(n); }
+        static volatile long sink;
+        static void work(void) { for (long i = 0; i < 200000L; i++) sink += i; }
+
+        /* Not static. The previous probe made this static, so the symbol was
+         * local -- and even its baseline recorded nothing, while upstream's
+         * (non-static) example recorded fine. */
+        CODSPEED_NOINLINE void __codspeed_root_frame__probe(void (*fn)(void)) { fn(); }
 
         int main(int argc, char **argv) {
           const char *v = argc > 1 ? argv[1] : "baseline";
           int integration_last = !strcmp(v, "integration_last");
+          int no_root_frame   = !strcmp(v, "no_root_frame");
+
           InstrumentHooks *h = instrument_hooks_init();
           if (!integration_last)
             instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
 
-          const char *uris[3]; int n = 1;
-          if (!strcmp(v, "path_uri")) {
-            uris[0] = "bench/Example.hs::probe::path_uri";
-          } else if (!strcmp(v, "multi")) {
-            n = 3;
-            uris[0] = "probe_multi_1"; uris[1] = "probe_multi_2"; uris[2] = "probe_multi_3";
-          } else if (integration_last) {
-            uris[0] = "probe_integration_last";
-          } else {
-            uris[0] = "probe_baseline";
-          }
+          const char *uri =
+              no_root_frame            ? "probe_no_root_frame"
+            : !strcmp(v, "path_uri")   ? "bench/Example.hs::probe::path_uri"
+            : integration_last         ? "probe_integration_last"
+                                       : "probe_baseline";
 
-          for (int k = 0; k < n; k++) {
-            instrument_hooks_start_benchmark_inline(h);
-            __codspeed_root_frame__probe(k + 1);
-            instrument_hooks_stop_benchmark_inline(h);
-            instrument_hooks_set_executed_benchmark(h, (int)getpid(), uris[k]);
-          }
+          instrument_hooks_start_benchmark_inline(h);
+          if (no_root_frame) work();               /* the only difference */
+          else __codspeed_root_frame__probe(work);
+          instrument_hooks_stop_benchmark_inline(h);
+          instrument_hooks_set_executed_benchmark(h, (int)getpid(), uri);
 
           if (integration_last)
             instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
