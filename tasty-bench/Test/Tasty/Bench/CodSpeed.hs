@@ -95,9 +95,11 @@ import CodSpeed.RTS.Stats (
   measGC,
   measureRTS,
  )
+import CodSpeed.Sidecar qualified as Sidecar
 import Control.Exception (bracket_)
+import Control.Monad (unless)
 import Control.Monad.Trans.Cont (ContT, runContT)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe)
 import Data.Tagged (Tagged, retag)
@@ -113,6 +115,7 @@ import Test.Tasty.Bench hiding (defaultMain)
 import Test.Tasty.Bench.CodSpeed.Internal (
   Estimate (..),
   Measurement (..),
+  WithLoHi (..),
   encodeResult,
  )
 import Test.Tasty.Ingredients.ConsoleReporter (MinDurationToReport (..))
@@ -123,8 +126,10 @@ import Test.Tasty.Runners (
   TestTree (..),
   installSignalHandlers,
   parseOptions,
+  resultDescription,
   tryIngredients,
  )
+import Text.Read (readMaybe)
 
 -- | How the runner identifies itself and names benchmarks.
 data Config = Config
@@ -144,6 +149,14 @@ data Config = Config
 
   Off by default; see "CodSpeed.Instrument.RootFrame" for what it costs.
   -}
+  , configSidecarPath :: Maybe FilePath
+  {- ^ Where to write per-benchmark allocation, if anywhere.
+
+  Falls back to @$CODSPEED_HS_SIDECAR@, and writes nothing when that is unset
+  too. Independent of CodSpeed: allocation is exactly deterministic and is
+  measurable on hosts where the simulation instrument cannot run. See
+  "CodSpeed.Sidecar" and the @codspeed-hs-compare@ executable.
+  -}
   }
 
 -- | This package's identity, no source path, no root frame.
@@ -157,6 +170,7 @@ defaultConfig =
           }
     , configSourcePath = Nothing
     , configRootFrame = False
+    , configSidecarPath = Nothing
     }
 
 {- | Per-process runner state.
@@ -173,6 +187,8 @@ data RunnerState = RunnerState
   {- ^ Resolved once, because 'CodSpeed.RTS.Eventlog.eventlogEnabled' reads RTS
   flags and markers cost heap allocation even when the eventlog is off.
   -}
+  , stateSidecar :: !(IORef [Sidecar.Record])
+  -- ^ Accumulated as benchmarks run, written once at the end.
   }
 
 runnerRef :: IORef (Maybe RunnerState)
@@ -215,9 +231,40 @@ instance IsTest CodSpeedBench where
                     <> "Pass -j1 and avoid +RTS -N."
       -- No runner attached: hand straight back to tasty-bench, which keeps its
       -- adaptive timing loop and every other behaviour.
-      _ -> case payload of
-        Direct b -> run opts b yieldProgress
-        Cont c -> run opts c yieldProgress
+      _ -> do
+        r <- case payload of
+          Direct b -> run opts b yieldProgress
+          Cont c -> run opts c yieldProgress
+        -- Still record allocation. tasty-bench measures it anyway and encodes it
+        -- into resultDescription in exactly the format the mirror types read, so
+        -- harvesting it costs nothing -- and the sidecar is most valuable
+        -- precisely here, on hosts where the simulation instrument cannot run.
+        mapM_ (\st -> harvestFallback st uri r) mstate
+        pure r
+
+{- | Pull allocation out of a result @tasty-bench@ produced.
+
+Silently does nothing if the description does not parse — a suite can legitimately
+contain leaves this package did not encode (a @bcompare@ node, say), and a
+sidecar missing one row is better than a benchmark run that dies over
+bookkeeping.
+-}
+harvestFallback :: RunnerState -> String -> Result -> IO ()
+harvestFallback st uri r =
+  case readMaybe (resultDescription r) of
+    Nothing -> pure ()
+    Just (WithLoHi est _ _) -> do
+      let record =
+            Sidecar.Record
+              { Sidecar.recUri = uri
+              , Sidecar.recAllocatedBytes = measAllocs (estMean est)
+              , Sidecar.recCopiedBytes = measCopied (estMean est)
+              , -- tasty-bench reports no collection counts, and a fabricated
+                -- zero would be indistinguishable from a measured one.
+                Sidecar.recCollections = 0
+              , Sidecar.recMajorCollections = 0
+              }
+      modifyIORef' (stateSidecar st) (record :)
 
 measurePayload :: RunnerState -> OptionSet -> String -> Payload -> IO Result
 measurePayload st opts uri payload = case payload of
@@ -250,6 +297,7 @@ measureOne st opts uri b = do
         uri
         (unBenchmarkable b 1)
   t1 <- getMonotonicTimeNSec
+  modifyIORef' (stateSidecar st) (Sidecar.fromMeasurement uri stats :)
   let gc = measGC stats
       est =
         Estimate
@@ -336,13 +384,36 @@ defaultMainWith cfg benchmarks =
             setOption (MinDurationToReport 1000000000000) opts
 
     evOn <- EL.eventlogEnabled
+    sidecarRef <- newIORef []
+    sidecarPath <- resolveSidecarPath (configSidecarPath cfg)
     bracket_
-      (writeIORef runnerRef (Just (RunnerState sess (configRootFrame cfg) evOn)))
-      (writeIORef runnerRef Nothing)
+      (writeIORef runnerRef (Just (RunnerState sess (configRootFrame cfg) evOn sidecarRef)))
+      -- tasty signals its result by throwing ExitCode, so the teardown of a
+      -- bracket is the only place the sidecar can reliably be written.
+      (flushSidecar sidecarPath sidecarRef >> writeIORef runnerRef Nothing)
       ( case tryIngredients benchIngredients opts' tree of
           Nothing -> exitFailure
           Just act -> act >>= \ok -> if ok then exitSuccess else exitFailure
       )
+
+-- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
+resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
+resolveSidecarPath (Just p) = pure (Just p)
+resolveSidecarPath Nothing = do
+  fromEnv <- lookupEnv "CODSPEED_HS_SIDECAR"
+  pure $ case fromEnv of
+    Just p | not (null p) -> Just p
+    _ -> Nothing
+
+{- | Emit whatever was measured.
+
+Skipped entirely when nothing was recorded, so an ordinary un-instrumented run
+does not litter the working directory with an empty file.
+-}
+flushSidecar :: Maybe FilePath -> IORef [Sidecar.Record] -> IO ()
+flushSidecar path ref = do
+  rs <- readIORef ref
+  unless (null rs) (Sidecar.writeSidecar path rs)
 
 {- | @tasty-bench@'s default 100-second per-benchmark cap, applied only when not
 instrumented. An explicit timeout always wins.

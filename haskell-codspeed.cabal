@@ -83,6 +83,7 @@ library
     CodSpeed.RTS.Eventlog
     CodSpeed.RTS.Preflight
     CodSpeed.RTS.Stats
+    CodSpeed.Sidecar
 
   -- cabal-gild: discover src --include=src/**/Internal.hs
   other-modules:
@@ -91,7 +92,19 @@ library
     vendor/instrument-hooks/includes
 
   c-sources: cbits/codspeed_shim.c
-  build-depends: haskell-codspeed:instrument-hooks
+  build-depends:
+    directory,
+    filepath,
+    haskell-codspeed:instrument-hooks,
+
+-- Compares two allocation sidecars and fails on regression. A separate gate from
+-- CodSpeed's own: allocation is exactly deterministic and is measurable on hosts
+-- where the CPU-simulation instrument cannot run at all.
+executable codspeed-hs-compare
+  import: defaults
+  hs-source-dirs: app
+  main-is: Compare.hs
+  build-depends: haskell-codspeed
 
 -- The tasty-bench glue is a separate component so the core library stays free of
 -- a tasty dependency; a project driving CodSpeed from its own harness needs only
@@ -148,6 +161,7 @@ test-suite haskell-codspeed-test
     BenchEncodingSpec
     InstrumentSpec
     PreflightSpec
+    SidecarSpec
     StatsSpec
 
   -- Deliberately not tasty-discover: test/Test.hs has to force single-threaded

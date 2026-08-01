@@ -56,6 +56,33 @@ For fixed code and input it is *exactly* reproducible — often a sharper regres
 signal than instruction counts, and it works on macOS and Windows where simulation mode
 cannot run at all.
 
+## Gating on allocation
+
+Each run can write a CSV of per-benchmark allocation, and `codspeed-hs-compare` fails
+CI when it grows. This is independent of CodSpeed — it works on any host, including
+ones where simulation mode cannot run.
+
+```bash
+CODSPEED_HS_SIDECAR=alloc.csv cabal bench example
+codspeed-hs-compare baseline/alloc.csv alloc.csv --tolerance 0.01
+```
+
+```
+allocation: 1 regression(s) beyond 1.0%
+  bench/Example.hs::allocation::materialised: +20.0% 9591818 B -> 11510181 B
+```
+
+A benchmark disappearing from the suite also fails, since that is otherwise
+indistinguishable from one that stopped regressing.
+
+Only `allocated_bytes` is gated, because only it is reproducible. Two runs of an
+identical binary reported 9591818 bytes allocated both times, and 580680 vs 580663
+bytes *copied* — copying depends on what the collector chose to do. The other columns
+are recorded for diagnosis.
+
+A copy is also dropped into `$CODSPEED_PROFILE_FOLDER` when the runner sets one; that
+folder is tarred and uploaded wholesale, so the data rides along for free.
+
 ## Cooperating with the rest of the toolchain
 
 - **`+RTS -T`** — when present, per-benchmark GC counts and copied bytes are reported

@@ -3,6 +3,7 @@ module Main (main) where
 import BenchEncodingSpec qualified
 import InstrumentSpec qualified
 import PreflightSpec qualified
+import SidecarSpec qualified
 import StatsSpec qualified
 import System.Environment (lookupEnv, setEnv)
 import Test.Tasty (defaultMain, testGroup)
@@ -56,5 +57,11 @@ main = do
           "BenchEncodingSpec"
           [ BenchEncodingSpec.test_encoding
           , BenchEncodingSpec.test_roundTrip
+          ]
+      , testGroup
+          "SidecarSpec"
+          [ SidecarSpec.test_csvRoundTrip
+          , SidecarSpec.test_csvParsing
+          , SidecarSpec.test_comparison
           ]
       ]
