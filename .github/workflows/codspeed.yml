@@ -186,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [baseline, no_root_frame, path_uri, integration_last]
+        variant: [verbatim, uri_bare, uri_path, integration_name]
     permissions:
       contents: read
       id-token: write
@@ -200,58 +200,30 @@ jobs:
     #
     # One C program, several URI shapes, one round-trip. Whichever shapes come
     # back name the constraint.
-    - name: Build the probe
+    # Two hand-written probes in a row failed at their own control, so stop
+    # rewriting upstream's example and mutate it instead. main.c verbatim is the
+    # one program known to have recorded here (example_benchmark, 211.8 ms);
+    # each variant changes a single token in it, and the applied diff is printed
+    # so the mutation can be checked rather than assumed.
+    - name: Build from upstream's example, mutating one token
       env:
         VARIANT: ${{matrix.variant}}
       run: |
         mkdir -p /tmp/ex && cd /tmp/ex
-        cat > probe.c <<'EOF'
-        /* Mirrors upstream's example/main.c: same lifecycle, same root frame,
-         * same markers. Each variant changes exactly one thing. */
-        #include <stdio.h>
-        #include <string.h>
-        #include <unistd.h>
-        #include "core.h"
-
-        /* upstream's example defines this itself; core.h does not provide it */
-        #define CODSPEED_NOINLINE __attribute__((noinline))
-
-        static volatile long sink;
-        static void work(void) { for (long i = 0; i < 200000L; i++) sink += i; }
-
-        /* Not static. The previous probe made this static, so the symbol was
-         * local -- and even its baseline recorded nothing, while upstream's
-         * (non-static) example recorded fine. */
-        CODSPEED_NOINLINE void __codspeed_root_frame__probe(void (*fn)(void)) { fn(); }
-
-        int main(int argc, char **argv) {
-          const char *v = argc > 1 ? argv[1] : "baseline";
-          int integration_last = !strcmp(v, "integration_last");
-          int no_root_frame   = !strcmp(v, "no_root_frame");
-
-          InstrumentHooks *h = instrument_hooks_init();
-          if (!integration_last)
-            instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
-
-          const char *uri =
-              no_root_frame            ? "probe_no_root_frame"
-            : !strcmp(v, "path_uri")   ? "bench/Example.hs::probe::path_uri"
-            : integration_last         ? "probe_integration_last"
-                                       : "probe_baseline";
-
-          instrument_hooks_start_benchmark_inline(h);
-          if (no_root_frame) work();               /* the only difference */
-          else __codspeed_root_frame__probe(work);
-          instrument_hooks_stop_benchmark_inline(h);
-          instrument_hooks_set_executed_benchmark(h, (int)getpid(), uri);
-
-          if (integration_last)
-            instrument_hooks_set_integration(h, "haskell-codspeed", "0.1.0.0");
-          instrument_hooks_deinit(h);
-          return 0;
-        }
-        EOF
-        gcc -O1 -o example probe.c \
+        curl -fsSL -o main.c \
+          https://raw.githubusercontent.com/CodSpeedHQ/instrument-hooks/main/example/main.c
+        cp main.c orig.c
+        case "$VARIANT" in
+          verbatim) ;;
+          uri_bare)
+            sed -i 's|"example_benchmark"|"probe_uri_bare"|' main.c ;;
+          uri_path)
+            sed -i 's|"example_benchmark"|"bench/Example.hs::probe::uri_path"|' main.c ;;
+          integration_name)
+            sed -i 's|"custom-integration"|"haskell-codspeed"|; s|"example_benchmark"|"probe_integration_name"|' main.c ;;
+        esac
+        echo "### mutation applied:"; diff orig.c main.c || true
+        gcc -O1 -o example main.c \
           "$GITHUB_WORKSPACE/vendor/instrument-hooks/cbits/core.c" \
           -I"$GITHUB_WORKSPACE/vendor/instrument-hooks/includes" \
           -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-parameter \
@@ -261,7 +233,7 @@ jobs:
       uses: CodSpeedHQ/action@v5
       with:
         mode: simulation
-        run: /tmp/ex/example ${{matrix.variant}}
+        run: /tmp/ex/example
 
   flamegraph:
     name: Cost-centre flamegraphs
