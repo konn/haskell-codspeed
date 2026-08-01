@@ -81,6 +81,7 @@ library
   hs-source-dirs: src
   -- cabal-gild: discover src --exclude=src/**/Internal.hs
   exposed-modules:
+    CodSpeed.Callgrind
     CodSpeed.Callgrind.Demangle
     CodSpeed.Instrument
     CodSpeed.Instrument.Raw
@@ -194,6 +195,7 @@ test-suite haskell-codspeed-test
   other-modules:
     BenchEncodingSpec
     CCSSpec
+    CallgrindSpec
     ConfigSpec
     DemangleSpec
     InstrumentSpec
@@ -204,6 +206,7 @@ test-suite haskell-codspeed-test
   -- Deliberately not tasty-discover: test/Test.hs has to force single-threaded
   -- execution before the runner parses options, which a generated main cannot do.
   build-depends:
+    containers,
     haskell-codspeed,
     haskell-codspeed:tasty-bench-codspeed,
     tasty,

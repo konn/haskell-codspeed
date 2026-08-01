@@ -2,6 +2,7 @@ module Main (main) where
 
 import BenchEncodingSpec qualified
 import CCSSpec qualified
+import CallgrindSpec qualified
 import ConfigSpec qualified
 import DemangleSpec qualified
 import InstrumentSpec qualified
@@ -43,6 +44,11 @@ main = do
           , InstrumentSpec.test_rootFrame
           ]
       , testGroup "ConfigSpec" [ConfigSpec.test_integrationVersion]
+      , testGroup
+          "CallgrindSpec"
+          [ CallgrindSpec.test_roundTrip
+          , CallgrindSpec.test_selfCost
+          ]
       , testGroup "DemangleSpec" [DemangleSpec.test_demangle]
       , testGroup
           "StatsSpec"
