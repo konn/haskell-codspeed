@@ -113,10 +113,16 @@ jobs:
         # Per-benchmark allocation, written by the suite itself. Uploaded below;
         # this is the metric CodSpeed has no channel for.
         CODSPEED_HS_SIDECAR: ${{github.workspace}}/allocation.csv
-        # Makes the chained rewriter merge rather than only decode symbols.
-        # Without it Main.$wgo never appears: at -O2 it has no ELF frame, and its
-        # cost surfaces under thunk-entry and update-frame machinery instead.
-        CODSPEED_HS_CCS_DIR: ${{github.workspace}}/ccs
+        # NOT set: CODSPEED_HS_CCS_DIR, which would make the chained rewriter
+        # merge cost centres in rather than only decode symbols.
+        #
+        # Turning it on produced a flamegraph with a single frame --
+        # `<RTS: thunks and stack>` at 100% -- and moved the reported metric from
+        # 3.62 ms to 4.36 ms. The emitted body reconciles exactly against its own
+        # totals: locally, and the profile round-trips, so the fault is in how the
+        # backend reads the authored call graph rather than in the arithmetic.
+        # Until that is understood, the rename-only path is what ships: it is
+        # known to render correctly and to leave the metric alone.
       with:
         mode: simulation
         run: ${{steps.bin.outputs.path}} && ${{steps.bin.outputs.rewrite}}
