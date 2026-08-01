@@ -178,14 +178,22 @@ data Config = Config
   -}
   }
 
--- | This package's identity, no source path, no root frame.
+{- | This package's identity.
+
+The version is deliberately __not__ this package's Cabal version. Haskell uses
+PVP, so that is @0.1.0.0@ — four components, which is not semver. Every
+integration CodSpeed ships reports semver here (@pytest-codspeed@ its
+@__version__@, @codspeed-node@ its package version, @codspeed-rust@ its crate
+version), and a backend that parses this field would reject a fourth component
+without saying so. Cheap to avoid; expensive to diagnose.
+-}
 defaultConfig :: Config
 defaultConfig =
   Config
     { configIntegration =
         Integration
           { integrationName = "haskell-codspeed"
-          , integrationVersion = "0.1.0.0"
+          , integrationVersion = "0.1.0"
           }
     , configComponent = Nothing
     , configRootFrame = True

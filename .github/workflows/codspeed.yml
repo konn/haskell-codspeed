@@ -217,39 +217,30 @@ jobs:
         path: profile/
         if-no-files-found: warn
 
-  # Differential test. This is what identified every requirement the backend does
-  # not report violations of.
+  # Differential test: mutate upstream's example/main.c by one token per leg and
+  # see which URIs come back.
   #
-  # Diffing the rejected Haskell profile against the C profile the backend
-  # accepted left exactly four structural differences. Reproducing each one in
-  # upstream's own example/main.c -- one token, nothing else touched -- and
-  # uploading all five to the same run gave a clean answer: only `control`
-  # recorded. All four are individually fatal, and our profile had all four.
+  # READ THE GH_MATRIX NOTE BELOW BEFORE ADDING LEGS. Without those two env vars
+  # every leg uploads under the same run part and the backend keeps only the last,
+  # so the others are never read. That happened, and it produced a confident,
+  # entirely false result: legs claiming that metadata ordering, the root frame,
+  # markers and an environment json were each individually fatal. They were simply
+  # overwritten. Anything inferred from a leg that ran without GH_MATRIX is void.
   #
-  #   control     URI rename only                                211.8 ms
-  #   meta_last   metadata part after the benchmarks             not recorded
-  #   no_root     no __codspeed_root_frame__ frame               not recorded
-  #   no_markers  no instrument_hooks_add_marker calls           not recorded
-  #   env_json    an environment-<pid>.json in the profile       not recorded
+  # What this job has actually established, from legs that were read:
   #
-  # Every one of the five uploaded successfully and every profile carried the same
-  # 288,719,342 Ir. Nothing anywhere reports which requirement was missed.
+  #   verbatim, uri_bare, uri_path, integration_name   all recorded (022dbe9,
+  #     which used CodSpeedHQ/action -- the action sets GH_MATRIX itself)
+  #   multi   three benchmarks on one session in one process   recorded
   #
-  # `control` stays as a standing positive control: if a Haskell run records
-  # nothing, this says whether the pipeline itself was working that day. Fixed
-  # mutations are kept in the case block, unused, because re-deriving them cost
-  # four rounds.
+  # So: custom integrations work here, bare and `::`-path URIs both work, the
+  # name `haskell-codspeed` works, and many benchmarks per process work.
   #
-  # Fixing all four made the Haskell profile structurally identical to the
-  # accepted one -- metadata first, a root frame per benchmark parenting 99% of
-  # its part, marker frames, no environment json, non-zero totals throughout --
-  # and it still recorded nothing. Two differences from the C control survive,
-  # and these are them:
-  #
-  #   multi      three benchmarks in one process, as any real suite has; the C
-  #              control has exactly one, and no probe has ever had more
-  #   uri_colon  a single-colon URI. probe_uri_bare (no colon) and a `::` path
-  #              both recorded, but `example:All.fib.1000.leaky` is neither
+  # `control` stays as a standing positive control. The other mutations are kept
+  # in the case block, unused, because re-deriving them cost four rounds -- but
+  # note that markers and the environment json are now known NOT to be required:
+  # no CodSpeed integration emits markers under simulation, and CodSpeed's own
+  # exec-harness has no root frame at all.
   upstream-example:
     name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
@@ -321,6 +312,16 @@ jobs:
     - name: Measure it, keeping the profile
       env:
         VARIANT: ${{matrix.variant}}
+        # Not optional in a matrix. The runner derives
+        #   run_part_id = "{job}-{matrix}-{strategy}"  if both parse as JSON objects
+        #   run_part_id = "{job}"                      otherwise
+        # (runner 5.0.1, src/run_environment/github_actions/provider.rs:226-243),
+        # and only CodSpeedHQ/action sets these two -- the bare CLI does not. So
+        # every leg of this matrix was uploading under the identical run part, and
+        # the backend kept whichever arrived last. Both are required: the `if let`
+        # matches a tuple, so setting one alone changes nothing.
+        GH_MATRIX: ${{toJson(matrix)}}
+        GH_STRATEGY: ${{toJson(strategy)}}
       run: |
         curl -fsSL https://codspeed.io/install.sh | bash
         export PATH="$HOME/.codspeed/bin:$PATH"
