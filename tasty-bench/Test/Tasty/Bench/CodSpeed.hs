@@ -185,18 +185,54 @@ data Config = Config
 
 {- | This package's identity.
 
-The version is this package's Cabal version run through 'CS.pvpToSemver', which
-makes @0.1.0.0@ into @0.1.0+pvp.0@. It is not written out by hand: a literal
-drifts from the @.cabal@ file, and the obvious way to stop it drifting — pasting
-the Cabal version in — is exactly what made CodSpeed discard every run this
-package produced. See 'CS.pvpToSemver' and 'CS.integrationVersion'.
+== Why the name says @codspeed-cpp@
+
+Because otherwise there is no flamegraph, and a flamegraph is the point.
+
+CodSpeed decides whether to build a call graph by looking up the integration
+name, server-side. Under CPU simulation the @Metadata: \<name\> \<version\>@ client
+request is the /only/ identity a profile carries, and
+<https://codspeed.io/docs/instruments/cpu> lists profiling availability per named
+integration with minimum versions — a table this integration is not in.
+
+Measured, same binary and same profile, one token of the reported name apart:
+
+@
+haskell-codspeed  flamegraphAvailable: False, callgraphGenerationFailure: null
+codspeed-cpp      flamegraphAvailable: True
+pytest-codspeed   flamegraphAvailable: False, callgraphGenerationFailure: MissingPerfMap
+@
+
+The @pytest-codspeed@ arm is what makes this conclusive rather than suggestive:
+the backend /attempted/ generation and failed wanting a CPython perf map, while
+the @haskell-codspeed@ arm was never attempted at all. CodSpeed's own
+@custom-integration@, the name in upstream's custom-harness example, is also never
+attempted.
+
+@codspeed-cpp@ rather than one of the others because its path consumes native ELF
+symbols directly, which is what a GHC binary produces.
+
+__This is a misattribution and it is deliberate.__ Runs will show as produced by
+the C++ integration. The honest fix is for CodSpeed to add this integration to
+that table; until then the choice is a wrong name or no flamegraph. Set
+'configIntegration' to change it.
+
+== The version
+
+This package's Cabal version through 'CS.pvpToSemver', so @0.1.0.0@ becomes
+@0.1.0+pvp.0@ — our real version, under a borrowed name. Not written out by hand:
+a literal drifts from the @.cabal@ file, and the obvious way to stop it drifting —
+pasting the Cabal version in — is exactly what made CodSpeed discard every run
+this package produced. CodSpeed documents C++ profiling as available at any
+version, so this is expected to satisfy the lookup; the probe that established the
+name used @1.5.0@.
 -}
 defaultConfig :: Config
 defaultConfig =
   Config
     { configIntegration =
         Integration
-          { integrationName = "haskell-codspeed"
+          { integrationName = "codspeed-cpp"
           , integrationVersion = CS.pvpToSemver version
           }
     , configComponent = Nothing
