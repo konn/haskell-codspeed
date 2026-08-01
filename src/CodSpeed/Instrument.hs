@@ -86,7 +86,21 @@ data Mode
 -- | Who is reporting. Surfaces in the CodSpeed UI as the integration's identity.
 data Integration = Integration
   { integrationName :: String
+  -- ^ Free-form. Probed: @haskell-codspeed@ is accepted.
   , integrationVersion :: String
+  {- ^ __Semver, @x.y.z@ — three components.__
+
+  Not the Cabal version. Haskell uses PVP, so the natural thing to reach for
+  here is something like @0.1.0.0@, and a fourth component makes CodSpeed
+  discard the entire run.
+
+  Silently, and at a distance. The benchmarks run, the profile is written with
+  every URI and every cost in it, all return codes are zero, the runner logs a
+  successful upload and CI goes green; the run then reports "this run could not
+  be processed" with no indication of why. Changing @0.1.0.0@ to @0.1.0@, one
+  token, took this package's example suite from nothing recorded to all eight
+  benchmarks.
+  -}
   }
   deriving (Show, Eq)
 
@@ -185,9 +199,13 @@ on the same @callgrind-3.26.0.codspeed6@, on the same runner image. So the dump
 does not poison later instrumentation, and the probe that said otherwise was
 measuring something else.
 
-The ordering is not cosmetic. Every profile CodSpeed is known to accept carries
-its metadata part first; ours carried it last, which is one of the few structural
-differences between our profile and a working one.
+Whether the backend cares about the ordering is untested — a later probe claiming
+it was fatal turned out never to have been read. Every integration CodSpeed ships
+calls this at init, which is reason enough to do the same.
+
+__What the backend does care about is the version string.__ It must be semver:
+@0.1.0.0@ — a perfectly ordinary Haskell package version — makes the whole run
+be discarded, silently. See 'Integration'.
 -}
 reportIntegration :: Session -> Integration -> IO ()
 reportIntegration sess integration
@@ -202,12 +220,16 @@ data Options = Options
   { optRootFrame :: !Bool
   {- ^ Wrap the body in a @__codspeed_root_frame__@ C frame.
 
-  On by default, and turning it off means the run will not be recorded.
-  @CUSTOM_HARNESS.md@ asks for this frame, and it means it: upstream's example
-  with the frame call replaced by a direct call — one token, everything else
-  identical — produced a profile with correct URIs and 288M @Ir@ that the
-  backend accepted no benchmark from, in the same run as a control that
-  recorded.
+  On by default, but /not/ because a run without it is rejected — it is not.
+  CodSpeed's own @exec-harness@ has no root frame anywhere and records fine.
+
+  It is on because it is what shapes the flamegraph, which is the reason this
+  package exists. Every language integration arranges one: @pytest-codspeed@ a
+  nested Python closure, @codspeed-node@ a named JS function, @codspeed-rust@,
+  @-cpp@ and @-go@ real symbols.
+
+  (An earlier version of this comment said omitting it was fatal, on a probe
+  whose profile the backend never read. See @README.md@ on @GH_MATRIX@.)
 
   Costs an RTS in-call per benchmark, which moves the body onto a fresh bound
   thread and so puts it out of reach of @System.Timeout.timeout@. See

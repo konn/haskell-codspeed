@@ -127,10 +127,17 @@ markerBenchmarkEnd = 3
 must be matched by a @BENCHMARK_END@, in chronological order — the backend
 rejects violations.
 
-Not optional, and not only for walltime. Deleting these two calls from
-upstream's @example\/main.c@ and changing nothing else produced a profile the
-backend accepted no benchmark from, under CPU simulation, alongside a control
-that recorded. Whatever they are for, a run without them does not count.
+__A no-op under CPU simulation.__ The dispatch handles the walltime and analysis
+instruments and falls through to success for everything else, writing nothing:
+@cbits\/core.c@ around line 44264 tests @tag == 1@ then @tag == 2@, and the
+valgrind instrument reaches @t7 = 0@ via @zig_block_5@. Every first-party
+integration agrees — @pytest-codspeed@, @codspeed-node@, @-rust@, @-cpp@ and
+@-go@ all confine markers to their walltime paths.
+
+Emitted anyway, because they cost a call that writes nothing under simulation and
+are the whole story under walltime, which this package does not support yet but
+should. An earlier version of this comment claimed they were required under
+simulation; that came from a probe whose result was never read.
 -}
 foreign import ccall unsafe "instrument_hooks_add_marker"
   c_addMarker :: Ptr InstrumentHooks -> CInt -> Word8 -> Word64 -> IO Word8

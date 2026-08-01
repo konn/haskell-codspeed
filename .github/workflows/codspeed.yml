@@ -107,16 +107,18 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
-  # Checks the profile against the four requirements the probe matrix
-  # established, none of which anything reports a violation of: metadata part
-  # first, a __codspeed_root_frame__ frame, marker calls, and no
-  # environment-<pid>.json. Getting any of them wrong produces a profile that
-  # looks entirely correct and is silently dropped, which is worth a job.
+  # Captures the raw callgrind output and checks its shape.
   #
-  # Also settles a retracted claim: set_integration used to run last, on a local
-  # probe that appeared to show its CALLGRIND_DUMP_STATS_AT leaving callgrind
-  # unable to instrument anything afterwards (totals: 0). It runs first now, so
-  # zero totals below would mean that probe was right after all.
+  # None of these are known backend requirements -- the one requirement that bit
+  # us was the integration version, which is asserted by a unit test instead.
+  # They are the properties this package intends its profile to have: metadata
+  # part first (what every integration does), a root frame per benchmark (what
+  # shapes the flamegraph), non-zero totals (that instrumentation ran at all).
+  #
+  # The totals check also settles a retracted claim: set_integration used to run
+  # last, on a local probe that appeared to show its CALLGRIND_DUMP_STATS_AT
+  # leaving callgrind unable to instrument anything afterwards. It runs first
+  # now, so zero totals would mean that probe was right after all.
   #
   # Runs the CLI directly because `codspeed run` accepts --profile-folder and the
   # action does not.
@@ -181,13 +183,18 @@ jobs:
           if [ "$n" -gt 0 ]; then echo "  ok   root frame present ($n)"
           else echo '  FAIL no __codspeed_root_frame__ frame'; fi
 
-          n=$(grep -c '^c\?fn=instrument_hooks_add_marker' "$f" || true)
-          if [ "$n" -gt 0 ]; then echo "  ok   marker calls present ($n)"
-          else echo '  FAIL no instrument_hooks_add_marker frames'; fi
+          # Not asserted on: add_marker writes nothing under simulation. Its
+          # dispatch handles the walltime and analysis instruments and falls
+          # through to success for anything else (cbits/core.c around 44264), and
+          # no first-party integration emits markers on this path either. Shown
+          # because the calls are still made, and will matter under walltime.
+          echo "  note marker frames: $(grep -c '^c\?fn=instrument_hooks_add_marker' "$f" || true)"
 
+          # Written on purpose, like every first-party integration does; listed
+          # so the folder's contents stay visible rather than asserted on.
           if ls environment-*.json >/dev/null 2>&1; then
-            echo '  FAIL an environment-<pid>.json is in the profile folder'
-          else echo '  ok   no environment json'; fi
+            echo "  ok   environment json present: $(cat environment-*.json | tr -d '\n ' | head -c 200)"
+          else echo '  note no environment json'; fi
 
           # Zero totals on every benchmark part would mean the retracted
           # dump-poisons-instrumentation claim was right after all.

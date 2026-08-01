@@ -562,15 +562,17 @@ A change of GHC version, RTS flags or @-A@ shifts instruction counts exactly as 
 code change does, so it belongs in the run's metadata rather than in someone's
 memory.
 
-Off unless @CODSPEED_HS_WRITE_ENVIRONMENT@ is set to something other than @0@,
-and reluctantly so. The flush drops an @environment-\<pid\>.json@ into the profile
-folder holding @integration_environment.haskell@, and the profile folder is an
-interface owned by a backend that has never seen a Haskell integration. It is one
-of the few things present in our rejected profiles and absent from the C profile
-the backend accepted, so it stays off until a probe clears it.
+The flush drops an @environment-\<pid\>.json@ into @$CODSPEED_PROFILE_FOLDER@
+holding an @integration_environment.haskell@ section. This was briefly gated off,
+on a suspicion that an unfamiliar section name in a folder the backend owns might
+be what was getting runs rejected. It was not — the rejection was the integration
+version (see 'CS.Integration') — and every first-party integration writes this
+unconditionally under simulation, each keyed by its own language:
+@codspeed-cpp@ @\"cpp\"@, @codspeed-rust@ @\"rust\"@, @codspeed-go@ @\"go\"@,
+@pytest-codspeed@ @\"python\"@.
 
-Registering the values costs nothing either way — without the flush they simply
-go nowhere.
+Set @CODSPEED_HS_WRITE_ENVIRONMENT=0@ to suppress it. Registering the values
+costs nothing either way — without the flush they simply go nowhere.
 -}
 reportBuildEnvironment :: Session -> IO ()
 reportBuildEnvironment sess = do
@@ -580,7 +582,7 @@ reportBuildEnvironment sess = do
     [ ("ghc-version", showVersion fullCompilerVersion)
     , ("instrument-hooks", CS.instrumentHooksCommit)
     ]
-  optIn <- lookupEnv "CODSPEED_HS_WRITE_ENVIRONMENT"
-  case optIn of
-    Just v | v /= "" && v /= "0" -> CS.writeEnvironment sess
-    _ -> pure ()
+  optOut <- lookupEnv "CODSPEED_HS_WRITE_ENVIRONMENT"
+  case optOut of
+    Just "0" -> pure ()
+    _ -> CS.writeEnvironment sess
