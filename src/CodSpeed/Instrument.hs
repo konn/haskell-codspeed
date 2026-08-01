@@ -46,7 +46,7 @@ module CodSpeed.Instrument (
 import CodSpeed.Instrument.Raw
 import CodSpeed.Instrument.RootFrame (withRootFrame)
 import CodSpeed.InstrumentHooks.Vendor (instrumentHooksCommit)
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket, finally, throwIO)
 import Control.Monad (unless, when)
 import Data.Char (toLower)
 import Data.Word (Word8)
@@ -155,20 +155,51 @@ withSession integration act =
         else toBool <$> c_isInstrumented hooks
     mode <- detectMode
     pid <- c_getpid
-    when instrumented $
-      withCString (integrationName integration) $ \cname ->
-        withCString (integrationVersion integration) $ \cver ->
-          checkRC "set_integration" =<< c_setIntegration hooks cname cver
-    act
-      Session
-        { sessionHooks = hooks
-        , sessionMode = mode
-        , sessionPid = pid
-        , sessionInstrumented = instrumented
-        }
+    let sess =
+          Session
+            { sessionHooks = hooks
+            , sessionMode = mode
+            , sessionPid = pid
+            , sessionInstrumented = instrumented
+            }
+    -- Registered last, not first. See 'reportIntegration'. `finally` because the
+    -- body normally leaves by throwing ExitCode.
+    act sess `finally` reportIntegration sess integration
   where
     acquire = c_init
     release hooks = unless (hooks == nullPtr) (c_deinit hooks)
+
+{- | Tell CodSpeed which integration produced these results.
+
+__Must run after the benchmarks, never before.__ Under the CPU-simulation
+instrument this is a @CALLGRIND_DUMP_STATS_AT@, and the runner starts Valgrind
+with @--instr-atstart=no@. Issuing a dump while instrumentation is still off
+leaves Callgrind in a state where @CALLGRIND_START_INSTRUMENTATION@ never takes
+effect again, so every subsequent measurement records zero.
+
+Nothing reports an error when that happens. The benchmarks run, the profile is
+written with all the right benchmark URIs in it, every return code is 0, the
+runner uploads happily and the job goes green — and the backend rejects the run
+with "this run could not be processed", because every cost in it is zero.
+
+Measured, on CodSpeed's own Valgrind fork, two identical benchmarks differing
+only in when this call happens:
+
+@
+set_integration first:  totals: 0
+set_integration last:   totals: 6000008
+@
+
+Upstream's @example\/main.c@ calls it first, which is where the original ordering
+came from.
+-}
+reportIntegration :: Session -> Integration -> IO ()
+reportIntegration sess integration
+  | not (sessionInstrumented sess) = pure ()
+  | otherwise =
+      withCString (integrationName integration) $ \cname ->
+        withCString (integrationVersion integration) $ \cver ->
+          checkRC "set_integration" =<< c_setIntegration (sessionHooks sess) cname cver
 
 -- | Knobs for a single measurement. Start from 'defaultOptions'.
 data Options = Options

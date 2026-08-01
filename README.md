@@ -174,6 +174,32 @@ ghc-options:
 Note that `-A` is part of the measurement contract: changing it shifts instruction
 counts exactly as a code change would, and invalidates the CodSpeed baseline.
 
+## A trap in the instrument-hooks API
+
+`instrument_hooks_set_integration` must be called **after** the benchmarks, not
+before.
+
+Under CPU simulation it is a `CALLGRIND_DUMP_STATS_AT`, and the runner starts
+Valgrind with `--instr-atstart=no`. A dump issued while instrumentation is still
+off leaves Callgrind in a state where `CALLGRIND_START_INSTRUMENTATION` never takes
+effect again, so every measurement afterwards records zero.
+
+Measured on CodSpeed's own Valgrind fork, two runs differing only in when that call
+happens:
+
+```
+set_integration first:  totals: 0
+set_integration last:   totals: 6000008
+```
+
+Nothing reports an error. The benchmarks run, the profile is written with all the
+right URIs in it, every return code is `0`, the runner uploads and the CI job goes
+green. The only symptom is the CodSpeed run saying *"this run could not be
+processed"*, because every cost in it is zero.
+
+Upstream's [`example/main.c`](https://github.com/CodSpeedHQ/instrument-hooks/blob/main/example/main.c)
+calls it first, so this is easy to inherit.
+
 ## Caveats worth knowing
 
 **The body runs exactly once under instrumentation.** Nothing is averaged and no first
