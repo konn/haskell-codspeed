@@ -47,7 +47,7 @@ import CodSpeed.Instrument.Raw
 import CodSpeed.Instrument.RootFrame (withRootFrame)
 import CodSpeed.InstrumentHooks.Vendor (instrumentHooksCommit)
 import Control.Exception (bracket, throwIO)
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
 import Data.Char (toLower)
 import Data.Word (Word8)
 import Foreign.C.String (CString, withCString)
@@ -202,6 +202,13 @@ data Options = Options
   { optRootFrame :: !Bool
   {- ^ Wrap the body in a @__codspeed_root_frame__@ C frame.
 
+  On by default, and turning it off means the run will not be recorded.
+  @CUSTOM_HARNESS.md@ asks for this frame, and it means it: upstream's example
+  with the frame call replaced by a direct call — one token, everything else
+  identical — produced a profile with correct URIs and 288M @Ir@ that the
+  backend accepted no benchmark from, in the same run as a control that
+  recorded.
+
   Costs an RTS in-call per benchmark, which moves the body onto a fresh bound
   thread and so puts it out of reach of @System.Timeout.timeout@. See
   "CodSpeed.Instrument.RootFrame".
@@ -227,9 +234,9 @@ data Options = Options
   }
   deriving (Show, Eq)
 
--- | Root frame off, GC on.
+-- | Both on. The root frame is not a nicety — see 'optRootFrame'.
 defaultOptions :: Options
-defaultOptions = Options {optRootFrame = False, optPerformGC = True}
+defaultOptions = Options {optRootFrame = True, optPerformGC = True}
 
 -- | 'benchmarkWith' at 'defaultOptions'.
 benchmark :: Session -> String -> IO () -> IO ()
@@ -246,6 +253,22 @@ is reported, so callers get the side effects without the bookkeeping.
 The action is run precisely once. For a lazy language that places the burden on
 the caller: whatever the action does must genuinely force the work under test, and
 any input it depends on should already be evaluated before this is called.
+
+== The shape of the window
+
+Four things about the sequence below are load-bearing, each established by
+deleting it from upstream's @example\/main.c@ and watching the backend accept no
+benchmark from the result while an otherwise identical control recorded:
+
+* the benchmark runs beneath a @__codspeed_root_frame__@ frame,
+* the region is delimited by a @BENCHMARK_START@\/@BENCHMARK_END@ marker pair,
+* both happen /after/ @start_benchmark@, so Callgrind actually sees them,
+* and the integration metadata was reported before any of this (see
+  'reportIntegration').
+
+Nothing reports an error when one is missing. The benchmarks run, the profile is
+written with all the right URIs and non-zero costs in it, every return code is
+zero, and the run is rejected server-side.
 -}
 benchmarkWith :: Options -> Session -> String -> IO () -> IO ()
 benchmarkWith opts sess uri act
@@ -258,7 +281,12 @@ benchmarkWith opts sess uri act
       -- `wrap` is inside the window rather than around it, because Callgrind
       -- only sees calls made after instrumentation starts. See 'optRootFrame'.
       rc <- c_startBenchmark hooks
-      when (rc == 0) (wrap act)
+      when (rc == 0) $ do
+        t0 <- c_currentTimestamp
+        wrap act
+        t1 <- c_currentTimestamp
+        marker markerBenchmarkStart t0
+        marker markerBenchmarkEnd t1
       stopRC <- c_stopBenchmark hooks
       checkRC "start_benchmark" rc
       checkRC "stop_benchmark" stopRC
@@ -268,6 +296,13 @@ benchmarkWith opts sess uri act
   where
     hooks = sessionHooks sess
     wrap = if optRootFrame opts then withRootFrame else id
+
+    -- Return code deliberately ignored, as upstream's example ignores it. A
+    -- marker that could not be delivered -- no runner listening on the walltime
+    -- FIFO, say -- is not a reason to fail a measurement that otherwise
+    -- succeeded, and this runs inside the counted window where throwing would
+    -- leave the instrument started.
+    marker ty t = void (c_addMarker hooks (sessionPid sess) ty t)
 
 {- | Register key/value metadata under a named section.
 

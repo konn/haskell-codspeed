@@ -146,13 +146,13 @@ data Config = Config
   , configRootFrame :: Bool
   {- ^ Wrap each body in a @__codspeed_root_frame__@ C frame.
 
-  __On by default.__ @CUSTOM_HARNESS.md@ says the benchmarked code must run
-  inside such a frame, and it was initially read as a flamegraph nicety on the
-  evidence that CodSpeed's Valgrind fork mentions the name only in comments about
-  re-parenting. That reading looks wrong: without a root frame the backend
-  recorded no benchmarks at all, from either this package or a C probe, while
-  upstream's example — which has one — recorded fine through the identical
-  pipeline.
+  __On by default, and turning it off means the run is not recorded.__
+  @CUSTOM_HARNESS.md@ says the benchmarked code must run inside such a frame, and
+  it was initially read as a flamegraph nicety on the evidence that CodSpeed's
+  Valgrind fork mentions the name only in comments about re-parenting. A probe
+  settled it: upstream's example with the frame call replaced by a direct call,
+  one token and nothing else, recorded nothing, alongside a control that
+  recorded.
 
   It is not free: see "CodSpeed.Instrument.RootFrame". The body runs on a fresh
   bound thread via an RTS in-call, which puts it out of reach of

@@ -80,17 +80,19 @@ jobs:
         path: allocation.csv
         if-no-files-found: warn
 
-  # Diagnostic, and now also a falsification test.
+  # Checks the profile against the four requirements the probe matrix
+  # established, none of which anything reports a violation of: metadata part
+  # first, a __codspeed_root_frame__ frame, marker calls, and no
+  # environment-<pid>.json. Getting any of them wrong produces a profile that
+  # looks entirely correct and is silently dropped, which is worth a job.
   #
-  # set_integration used to run last, because a local probe appeared to show that
-  # issuing its CALLGRIND_DUMP_STATS_AT before CALLGRIND_START_INSTRUMENTATION
-  # left callgrind unable to instrument anything afterwards (totals: 0). It runs
-  # first again, per the documented lifecycle -- so if that probe was right, the
-  # totals printed below are all zero, and if it was wrong they are not. No
-  # inference required.
+  # Also settles a retracted claim: set_integration used to run last, on a local
+  # probe that appeared to show its CALLGRIND_DUMP_STATS_AT leaving callgrind
+  # unable to instrument anything afterwards (totals: 0). It runs first now, so
+  # zero totals below would mean that probe was right after all.
   #
-  # Runs the CLI directly only because `codspeed run` accepts --profile-folder and
-  # the action does not. Delete once this is settled.
+  # Runs the CLI directly because `codspeed run` accepts --profile-folder and the
+  # action does not.
   profile-dump:
     name: Capture the raw profile
     runs-on: ubuntu-latest
@@ -123,28 +125,59 @@ jobs:
         codspeed run -m simulation --profile-folder "$GITHUB_WORKSPACE/profile" \
           -- "$(cabal list-bin bench:example)" --pattern 'fib.1000' || true
 
-    - name: Report the profile's shape
+    - name: Check the profile against the four requirements
       if: always()
       run: |
-        cd "$GITHUB_WORKSPACE/profile" 2>/dev/null || { echo "no profile folder"; exit 0; }
+        cd "$GITHUB_WORKSPACE/profile" 2>/dev/null || { echo "no profile folder"; exit 1; }
         {
-          echo '## Files'
-          echo '(an environment-<pid>.json here would be a difference from the'
-          echo 'C profile the backend accepted -- expect none)'
-          ls -la
-          for f in *.out*; do
-            [ -f "$f" ] || continue
-            echo "## $f"
-            echo '### part order and cost'
-            echo '(Metadata should be part 1; benchmark totals must be non-zero)'
-            grep -E '^(part:|desc: Trigger: Client Request|totals:)' "$f" \
-              | sed 's/^desc: Trigger: Client Request: /  trigger: /' || echo '  NONE'
-            echo "### root frames: $(grep -c '^fn=__codspeed_root_frame__' "$f" || echo 0)"
-          done
+          echo '## Files'; ls -la
+          # The benchmark process writes the largest .out; the others are the
+          # shell wrapper and, in walltime, the runner's own.
+          f=$(ls -S ./*.out 2>/dev/null | head -1)
+          [ -n "$f" ] || echo '  FAIL no .out file in the profile folder'
+          echo "## $f"
+          echo '### part order and cost'
+          grep -E '^(part:|desc: Trigger: Client Request|totals:)' "$f" \
+            | sed 's/^desc: Trigger: Client Request: /  trigger: /'
+
+          echo '### requirements'
+          first=$(grep -m1 '^desc: Trigger: Client Request' "$f")
+          case "$first" in
+            *"Client Request: Metadata:"*) echo '  ok   metadata is the first part' ;;
+            *) echo "  FAIL metadata is not first (first trigger: $first)" ;;
+          esac
+
+          n=$(grep -c '^fn=__codspeed_root_frame__' "$f" || true)
+          if [ "$n" -gt 0 ]; then echo "  ok   root frame present ($n)"
+          else echo '  FAIL no __codspeed_root_frame__ frame'; fi
+
+          n=$(grep -c '^c\?fn=instrument_hooks_add_marker' "$f" || true)
+          if [ "$n" -gt 0 ]; then echo "  ok   marker calls present ($n)"
+          else echo '  FAIL no instrument_hooks_add_marker frames'; fi
+
+          if ls environment-*.json >/dev/null 2>&1; then
+            echo '  FAIL an environment-<pid>.json is in the profile folder'
+          else echo '  ok   no environment json'; fi
+
+          # Zero totals on every benchmark part would mean the retracted
+          # dump-poisons-instrumentation claim was right after all.
+          if grep -E '^totals: [1-9]' "$f" >/dev/null; then
+            echo '  ok   at least one part has non-zero totals'
+          else echo '  FAIL every part totals zero'; fi
+
           for l in valgrind*.log runner.log; do
             [ -f "$l" ] && { echo "## $l"; tail -25 "$l"; }
           done
-        } | tee -a "$GITHUB_STEP_SUMMARY"
+          true
+        } >"$RUNNER_TEMP/profile-report.txt" 2>&1
+        cat "$RUNNER_TEMP/profile-report.txt"
+        cat "$RUNNER_TEMP/profile-report.txt" >>"$GITHUB_STEP_SUMMARY"
+        # Written to a file rather than piped to tee, because a pipeline puts the
+        # whole group in a subshell and any status it sets there is lost.
+        if grep -q '  FAIL' "$RUNNER_TEMP/profile-report.txt"; then
+          echo "::error::the profile violates a requirement the backend does not report violations of"
+          exit 1
+        fi
 
     - name: Upload the profile
       if: always()
@@ -154,30 +187,35 @@ jobs:
         path: profile/
         if-no-files-found: warn
 
-  # Differential test, and the only one left that does not require guessing at a
-  # closed backend.
+  # Differential test. This is what identified every requirement the backend does
+  # not report violations of.
   #
-  # Diffing CI's rejected Haskell profile against the C profile the backend
-  # accepted leaves exactly four structural differences. Each variant below
-  # reproduces one of them in upstream's own example/main.c -- the single program
-  # known to have recorded here (example_benchmark, 211.8 ms) -- changing nothing
-  # else. Uploads from separate jobs merge into one run, so whichever URIs come
-  # back name the difference that is fatal:
+  # Diffing the rejected Haskell profile against the C profile the backend
+  # accepted left exactly four structural differences. Reproducing each one in
+  # upstream's own example/main.c -- one token, nothing else touched -- and
+  # uploading all five to the same run gave a clean answer: only `control`
+  # recorded. All four are individually fatal, and our profile had all four.
   #
-  #   meta_last   metadata part after the benchmarks (ours) vs first (upstream's)
-  #   no_root     no __codspeed_root_frame__ frame in the profile at all
-  #   no_markers  no instrument_hooks_add_marker calls
-  #   env_json    an environment-<pid>.json in the profile folder
+  #   control     URI rename only                                211.8 ms
+  #   meta_last   metadata part after the benchmarks             not recorded
+  #   no_root     no __codspeed_root_frame__ frame               not recorded
+  #   no_markers  no instrument_hooks_add_marker calls           not recorded
+  #   env_json    an environment-<pid>.json in the profile       not recorded
   #
-  # `control` renames only the URI, and must record: it is what makes a missing
-  # URI elsewhere mean something.
+  # Every one of the five uploaded successfully and every profile carried the same
+  # 288,719,342 Ir. Nothing anywhere reports which requirement was missed.
+  #
+  # `control` stays as a standing positive control: if a Haskell run records
+  # nothing, this says whether the pipeline itself was working that day. The
+  # mutations are kept in the case block, unused, because re-deriving them cost
+  # four rounds.
   upstream-example:
     name: Probe (${{matrix.variant}})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        variant: [control, meta_last, no_root, no_markers, env_json]
+        variant: [control]
     permissions:
       contents: read
       id-token: write

@@ -6,32 +6,42 @@ root. GHC mangles every Haskell binding to @\<pkg\>_\<Module\>_\<occ\>_info@, so
 Haskell function can ever carry that name. The only way to satisfy it is to bounce
 out to C and back.
 
-== The cost, and why this is off by default
+== The cost, which is paid anyway
 
+This was long treated as a flamegraph nicety, on the reading that CodSpeed's
+Valgrind fork mentions the name only in comments about re-parenting and that the
+runner never inspects it. That reading is wrong. Replacing the frame call with a
+direct call in upstream's own @example\/main.c@ — one token, nothing else
+touched — yields a profile with correct URIs and 288M @Ir@ that the backend
+accepts no benchmark from, in the same run as a control that records fine. The
+requirement is real and the documentation meant it literally.
+
+So the cost below is not optional, but it is worth knowing about.
 'withRootFrame' re-enters the RTS through a foreign export, which means
-@rts_lock@ and a fresh bound Haskell thread for every call. Three consequences,
-all of which argue for keeping this opt-in:
+@rts_lock@ and a fresh bound Haskell thread for every call:
 
 * __The action runs on a different Haskell thread than the caller.__ An
   asynchronous exception aimed at the calling thread — @System.Timeout.timeout@,
   and therefore tasty's @--timeout@ — will not interrupt it.
 * Thread identity changes, so anything keyed on 'Control.Concurrent.myThreadId'
   sees a different value inside.
-* There is a fixed setup cost per call. It lands /outside/ the measurement window
-  (see below), so it does not corrupt the count, but it is not free in wall time.
-
-Evidence from CodSpeed's Valgrind fork suggests the root frame shapes the call
-/graph/ rather than the /counter/ — it reconstructs the native stack at
-@CALLGRIND_START_INSTRUMENTATION@ and the runner never inspects the name. So
-omitting it should cost flamegraph tidiness and nothing else. That is the reason
-for the default; spike S0 is what confirms it.
+* There is a fixed setup cost per call, and it is counted — see below.
 
 == Where the window opens
 
-The measurement window is opened and closed by the caller's action, /inside/ the
-callback, not around 'withRootFrame'. That ordering is deliberate: it keeps
-@rts_lock@ and bound-thread setup outside the counted region, while still leaving
-the C frame on the native stack for the whole window.
+The window opens /before/ this is entered, so @rts_lock@ and bound-thread setup
+are inside the counted region.
+
+That is the opposite of what this module originally did, and the reversal is
+forced. Callgrind records calls made after @CALLGRIND_START_INSTRUMENTATION@ and
+does not reconstruct the frames already on the stack, so a root frame entered
+first is a frame it never sees: with the feature enabled, the profile contained
+no @__codspeed_root_frame__@ at all. A frame that is invisible to the profile
+cannot satisfy a requirement about the profile.
+
+The cost that buys is fixed and deterministic — the same in every measurement,
+in the same class as any other harness overhead inside the window — and
+upstream's example pays it identically.
 -}
 module CodSpeed.Instrument.RootFrame (
   withRootFrame,

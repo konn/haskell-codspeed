@@ -123,9 +123,14 @@ markerSampleEnd = 1
 markerBenchmarkStart = 2
 markerBenchmarkEnd = 3
 
-{- | Markers refine walltime flamegraphs; the CPU-simulation instrument ignores
-them. Every @BENCHMARK_START@ must be matched by a @BENCHMARK_END@, in
-chronological order — the backend rejects violations.
+{- | Delimit the benchmarked region in wall-clock time. Every @BENCHMARK_START@
+must be matched by a @BENCHMARK_END@, in chronological order — the backend
+rejects violations.
+
+Not optional, and not only for walltime. Deleting these two calls from
+upstream's @example\/main.c@ and changing nothing else produced a profile the
+backend accepted no benchmark from, under CPU simulation, alongside a control
+that recorded. Whatever they are for, a run without them does not count.
 -}
 foreign import ccall unsafe "instrument_hooks_add_marker"
   c_addMarker :: Ptr InstrumentHooks -> CInt -> Word8 -> Word64 -> IO Word8
