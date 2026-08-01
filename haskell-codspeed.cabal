@@ -126,6 +126,10 @@ library tasty-bench-codspeed
     Test.Tasty.Bench.CodSpeed
     Test.Tasty.Bench.CodSpeed.Internal
 
+  -- Reports this package's own version to CodSpeed, mapped to semver. Generated
+  -- rather than written out so the two cannot drift apart.
+  other-modules: Paths_haskell_codspeed
+  autogen-modules: Paths_haskell_codspeed
   -- The tasty-bench bound is load-bearing rather than habitual: the Internal
   -- module mirrors that package's unexported result encoding field-for-field, so
   -- widening it means re-checking the mirrors against the new source.

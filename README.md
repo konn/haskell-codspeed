@@ -183,9 +183,22 @@ counts exactly as a code change would, and invalidates the CodSpeed baseline.
 package version and CodSpeed discards the entire run.
 
 ```haskell
--- 0.1.0.0 -- the Cabal version. PVP. Four components. Not semver.
-integrationVersion = "0.1.0"
+-- 0.1.0.0 is PVP: four components, not semver.
+integrationVersion = pvpToSemver version   -- "0.1.0+pvp.0"
 ```
+
+`pvpToSemver` maps `A.B.C.D` to `A.B.C+pvp.D` — build metadata rather than a
+`-pvp.D` pre-release, because semver §9 makes a pre-release mean "unstable and
+might not satisfy the intended compatibility requirements" and orders it *below*
+the plain version, which is the wrong thing to say about a released package.
+Semver §10 has build metadata ignored for precedence, and that is what PVP's
+fourth component already means: `A.B` covers breaking changes, `C` additions, and
+`D` is reserved for changes that do not affect the API at all. The cost is that
+`0.1.0.0` and `0.1.0.1` become equal in precedence.
+
+It reads the version from `Paths_haskell_codspeed` rather than a literal, since
+the obvious way to keep a literal in step with the `.cabal` file is to paste the
+Cabal version in, which is the bug.
 
 Every integration CodSpeed ships reports semver there — `pytest-codspeed` its
 `__version__`, `codspeed-node` its package version, `codspeed-rust` its crate

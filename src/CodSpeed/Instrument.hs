@@ -21,6 +21,7 @@ module CodSpeed.Instrument (
   sessionPid,
   isInstrumented,
   Integration (..),
+  pvpToSemver,
   withSession,
 
   -- * Modes
@@ -49,6 +50,8 @@ import CodSpeed.InstrumentHooks.Vendor (instrumentHooksCommit)
 import Control.Exception (bracket, throwIO)
 import Control.Monad (unless, void, when)
 import Data.Char (toLower)
+import Data.List (intercalate)
+import Data.Version (Version (..))
 import Data.Word (Word8)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CBool (..), CInt)
@@ -100,9 +103,78 @@ data Integration = Integration
   be processed" with no indication of why. Changing @0.1.0.0@ to @0.1.0@, one
   token, took this package's example suite from nothing recorded to all eight
   benchmarks.
+
+  Use 'pvpToSemver' rather than picking a string by hand.
   -}
   }
   deriving (Show, Eq)
+
+{- | Carry a PVP version into semver without dropping a component.
+
+@A.B.C.D@ becomes @A.B.C+pvp.D@, and anything PVP adds beyond the fourth
+component comes along:
+
+>>> import Data.Version (makeVersion)
+>>> pvpToSemver (makeVersion [0, 1, 0, 0])
+"0.1.0+pvp.0"
+
+>>> pvpToSemver (makeVersion [1, 2, 3, 4, 5])
+"1.2.3+pvp.4.5"
+
+== Why build metadata and not a pre-release
+
+@+@ rather than @-@, deliberately. Semver §9 says a pre-release "indicates that
+the version is unstable and might not satisfy the intended compatibility
+requirements", and orders it /below/ the plain version — so @0.1.0-pvp.0@ would
+mark every released Haskell package as unstable and sort it beneath a @0.1.0@ no
+Haskell package would ever publish.
+
+§10 says build metadata is ignored for precedence, which is what PVP's fourth
+component already means: @A.B@ covers breaking changes, @C@ additions, and @D@ is
+reserved for changes that do not affect the API at all. A component that carries
+no compatibility information belongs in the part of the version that carries no
+compatibility information.
+
+The cost, which is real: @0.1.0.0@ and @0.1.0.1@ map to versions of /equal/
+precedence, so a consumer comparing them properly cannot tell them apart. They
+remain distinct strings, and this one identifies an integration in a UI rather
+than resolving dependencies, so that seemed the better trade than claiming
+instability.
+
+== Edge cases
+
+A version already the shape of a semver core is left alone, rather than growing
+an empty @+pvp.@:
+
+>>> pvpToSemver (makeVersion [2, 7, 1])
+"2.7.1"
+
+Short versions are padded, since semver requires all three components:
+
+>>> pvpToSemver (makeVersion [1, 4])
+"1.4.0"
+
+>>> pvpToSemver (makeVersion [3])
+"3.0.0"
+
+The empty version becomes @0.0.0@ rather than an error. A meaningless version
+string is much cheaper than a malformed one, given what the backend does with a
+malformed one.
+
+>>> pvpToSemver (makeVersion [])
+"0.0.0"
+
+Build-metadata identifiers must be alphanumerics and hyphens. These come from
+'versionBranch', which is @[Int]@, so 'show' cannot produce anything else.
+-}
+pvpToSemver :: Version -> String
+pvpToSemver v = core <> metadata
+  where
+    (top, rest) = splitAt 3 (versionBranch v)
+    core = intercalate "." (map show (take 3 (top <> repeat 0)))
+    metadata
+      | null rest = ""
+      | otherwise = "+pvp." <> intercalate "." (map show rest)
 
 -- | An open connection to the runner. Create with 'withSession'.
 data Session = Session

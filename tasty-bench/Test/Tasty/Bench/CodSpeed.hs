@@ -109,6 +109,7 @@ import Data.Tagged (Tagged, retag)
 import Data.Typeable (cast)
 import Data.Version (showVersion)
 import GHC.Clock (getMonotonicTimeNSec)
+import Paths_haskell_codspeed (version)
 import System.Environment (getProgName, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
@@ -180,12 +181,11 @@ data Config = Config
 
 {- | This package's identity.
 
-The version is deliberately __not__ this package's Cabal version. Haskell uses
-PVP, so that is @0.1.0.0@ — four components, which is not semver. Every
-integration CodSpeed ships reports semver here (@pytest-codspeed@ its
-@__version__@, @codspeed-node@ its package version, @codspeed-rust@ its crate
-version), and a backend that parses this field would reject a fourth component
-without saying so. Cheap to avoid; expensive to diagnose.
+The version is this package's Cabal version run through 'CS.pvpToSemver', which
+makes @0.1.0.0@ into @0.1.0+pvp.0@. It is not written out by hand: a literal
+drifts from the @.cabal@ file, and the obvious way to stop it drifting — pasting
+the Cabal version in — is exactly what made CodSpeed discard every run this
+package produced. See 'CS.pvpToSemver' and 'CS.integrationVersion'.
 -}
 defaultConfig :: Config
 defaultConfig =
@@ -193,7 +193,7 @@ defaultConfig =
     { configIntegration =
         Integration
           { integrationName = "haskell-codspeed"
-          , integrationVersion = "0.1.0"
+          , integrationVersion = CS.pvpToSemver version
           }
     , configComponent = Nothing
     , configRootFrame = True
