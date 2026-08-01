@@ -165,12 +165,16 @@ splitFields = go
     quoted (c : rest) acc = quoted rest (c : acc)
     quoted [] acc = [reverse acc]
 
-{- | Write the artifact to @path@ when one is given, and always drop a copy into
-@$CODSPEED_PROFILE_FOLDER@ when the runner has set one.
+{- | Write the artifact to @path@.
 
-The profile-folder copy is unconditional because it is free: the runner tars that
-directory blind and uploads it, so the data rides along whether or not anyone has
-asked for a local file.
+Deliberately writes nowhere else. An earlier version also dropped a copy into
+@$CODSPEED_PROFILE_FOLDER@, on the reasoning that the runner tars that directory
+wholesale so the data rode along for free. That is not obviously safe: the folder
+is an interface owned by the runner and the backend, and a file of an unknown kind
+sitting in it may or may not be tolerated by whatever consumes the tarball.
+
+Set @CODSPEED_HS_PROFILE_FOLDER_COPY=1@ to restore the old behaviour if a future
+CodSpeed grows a channel for extra metrics.
 -}
 writeSidecar :: Maybe FilePath -> [Record] -> IO ()
 writeSidecar path rs = do
@@ -178,13 +182,19 @@ writeSidecar path rs = do
   case path of
     Just p -> writeFile p body
     Nothing -> pure ()
-  folder <- lookupEnv "CODSPEED_PROFILE_FOLDER"
-  case folder of
-    Just dir | not (null dir) -> do
-      pid <- c_getpid
-      createDirectoryIfMissing True dir
-      writeFile (dir </> ("haskell-rts-" <> show pid <> ".csv")) body
+  optIn <- lookupEnv "CODSPEED_HS_PROFILE_FOLDER_COPY"
+  case optIn of
+    Just v | v /= "" && v /= "0" -> copyIntoProfileFolder body
     _ -> pure ()
+  where
+    copyIntoProfileFolder body = do
+      folder <- lookupEnv "CODSPEED_PROFILE_FOLDER"
+      case folder of
+        Just dir | not (null dir) -> do
+          pid <- c_getpid
+          createDirectoryIfMissing True dir
+          writeFile (dir </> ("haskell-rts-" <> show pid <> ".csv")) body
+        _ -> pure ()
 
 -- | What happened to one benchmark between two runs.
 data Verdict
