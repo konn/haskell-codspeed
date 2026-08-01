@@ -455,15 +455,34 @@ announce :: Session -> String -> IO ()
 announce sess prefix
   | isInstrumented sess =
       hPutStrLn stderr $
-        "[codspeed] measuring: mode="
-          <> show (sessionMode sess)
-          <> ", uri prefix="
+        "[codspeed] measuring: uri prefix="
           <> prefix
+          <> ", mode="
+          <> mode
+          <> pathWarning
   | otherwise =
       hPutStrLn stderr $
         "[codspeed] NOT measuring: no runner detected, falling back to "
           <> "tasty-bench's own timing loop. Nothing will be reported to CodSpeed. "
           <> "(Run under `codspeed run` to measure.)"
+  where
+    -- Whether a runner is attached and what mode it announced are separate
+    -- questions: under a bare valgrind the library activates while
+    -- CODSPEED_RUNNER_MODE is unset, and printing "NotInstrumented" there while
+    -- plainly measuring is worse than saying nothing.
+    mode = case sessionMode sess of
+      CS.NotInstrumented -> "unreported"
+      m -> show m
+
+    -- CodSpeed's convention is {git-relative-path}::{name}. A prefix that is not
+    -- a path still reaches the callgrind file intact, so nothing errors -- the
+    -- benchmarks simply do not appear in the run, which is how this was missed.
+    pathWarning
+      | '/' `elem` prefix || '.' `elem` prefix = ""
+      | otherwise =
+          "\n[codspeed] warning: the uri prefix does not look like a file path. "
+            <> "Set CODSPEED_HS_SOURCE_FILE (or Config's configSourcePath) to this "
+            <> "suite's path relative to the repository root."
 
 -- | @configSidecarPath@, else @$CODSPEED_HS_SIDECAR@, else no local file.
 resolveSidecarPath :: Maybe FilePath -> IO (Maybe FilePath)
