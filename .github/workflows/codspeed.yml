@@ -267,6 +267,26 @@ jobs:
   # includes cache and memory terms. A shift here is expected and legitimate; it
   # would mean re-baselining, which is a decision rather than a regression. This
   # measures how big it is before anyone takes it.
+  #
+  # RESULT (2026-08-02): costs nothing, buys nothing. Do not adopt.
+  #
+  #   .debug_info, .debug_line and .debug_frame all present in the binary, so the
+  #   flags took. Metric unchanged within scatter: 463.1 us against 455.9 us for
+  #   the same benchmark without them, in the same run.
+  #
+  #   And no source lines. Compared against the `example:` benchmarks in that same
+  #   run -- same rewriter, differing only in these two flags -- not one Haskell
+  #   frame gained a file: field. Only libc has one, and that comes from the
+  #   distro's own debuginfo package, not from us.
+  #
+  #   Kept as a job because the negative is worth being able to re-check against a
+  #   newer GHC or runner, and because it is cheap to re-run and expensive to
+  #   re-derive.
+  #
+  # Note when reading other probes: the `flamegraph-probe` arms do NOT chain
+  # codspeed-hs-rewrite, so their frames are raw z-encoded symbols. They answer
+  # the integration-name question and nothing else; do not compare their frame
+  # names against a job that does run the rewriter.
   dwarf-probe:
     name: DWARF probe
     if: github.event_name == 'workflow_dispatch'
