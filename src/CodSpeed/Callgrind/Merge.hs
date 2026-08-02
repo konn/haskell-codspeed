@@ -1,4 +1,26 @@
-{- | Grafting a cost-centre tree onto measured Callgrind costs.
+{- | __Experimental.__ Grafting a cost-centre tree onto measured Callgrind costs.
+
+Off unless @CODSPEED_HS_CCS_DIR@ is set for the measured run, and it should stay
+off until the caveat at the end of this header is resolved.
+
+== Why no other integration does this
+
+Every CodSpeed integration that renders a flamegraph does it by making the
+language's frames into /real code addresses/ Valgrind can resolve, never by
+authoring a profile:
+
+* C++, Rust, Zig and Go are natively compiled, so their frames already are ELF
+  symbols.
+* Python emits a CPython perf map — @\/tmp\/perf-\<pid\>.map@ — giving each
+  interpreted function an address range. That is what CodSpeed's
+  @MissingPerfMap@ failure means when a run reports itself as @pytest-codspeed@.
+* Node does the same through V8.
+
+Haskell can join neither group. A cost centre is not a code address:
+@-fprof-late@ maintains the cost-centre stack at runtime, and one address sits
+beneath many different cost-centre stacks, so there is no perf map to write.
+Authoring the profile is the only route left, and it is one the backend has never
+been asked to accept.
 
 The problem this solves: at @-O2@ a Haskell function often has no frame of its
 own in the ELF symbol table. The lazy @fib@'s accumulator loop spends its time in
@@ -35,6 +57,27 @@ because @CODSPEED_HS_DETERMINISTIC@ makes it take the same path the instrumented
 run takes. That is what makes the two comparable at all, and it is checkable:
 the side-car's allocation figure should match the measured run's, and it does
 (676592 B for @fib.10000.leaky@ on both, across two architectures).
+
+== Why it is still experimental
+
+__CodSpeed does not render the authored graph, and the metric moves.__ Measured
+in one run, same commit, same binary, merged against rename-only:
+
+@
+                     rename-only   merged
+fib.10000.leaky        3.5 ms      4.4 ms
+fib.10000.strict      116.5 us    371.5 us
+@
+
+and the flamegraph collapses to a single frame at 100%.
+
+The second line of that table is the important one, and it invalidates the
+obvious way to test this module. Every part it emits reconciles exactly against
+its own @totals:@, and @totals:@ is byte-identical before and after — but the
+number CodSpeed reports is derived from the /graph/, not from @totals:@. So
+internal reconciliation, which is what the tests check, cannot detect a metric
+regression. Restoring @ob=@ and @fl=???@ — the only structural difference from
+the profile that does render — changed nothing.
 -}
 module CodSpeed.Callgrind.Merge (
   -- * Cost-centre trees

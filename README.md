@@ -44,6 +44,32 @@ Every one of those numbers was reproducible and plausible. This package opens th
 measurement window around each `bench` leaf instead, so the number describes the code
 you wrote.
 
+## What you get, and how solid each part is
+
+| | status |
+| --- | --- |
+| **Instruction counts**, per benchmark, from CodSpeed's CPU simulation | measured, stable |
+| **Allocation**, per benchmark, exact and independently gated | measured, exact |
+| **Flamegraph with Haskell frame names** in CodSpeed | measured, shipping |
+| **Flamegraph frames that are GHC cost centres** | experimental, opt-in, see below |
+
+The first two are the core: a regression gate on two metrics, one of which is
+exactly reproducible. The third is a real flamegraph — every cost sits where
+Callgrind measured it — whose frames read `GHC.Internal.Num.$fNumInt_$c+` rather
+than `ghczminternal_GHCziInternalziNum_zdfNumIntzuzdczp_info`.
+
+The fourth is the hard one, and it is worth knowing why, because it is not a gap
+in this package so much as a gap in what the format can express. Every CodSpeed
+integration that renders a flamegraph does it by making its language's frames into
+**real code addresses** Valgrind can resolve — C++, Rust, Zig and Go get that for
+free by being compiled; Python and Node emit perf maps that give interpreted
+functions an address range. A GHC cost centre is not a code address: `-fprof-late`
+maintains the cost-centre stack at runtime, and one address sits beneath many
+different stacks. So there is no perf map to write, and authoring the profile is
+the only route left — which no integration does, and which the backend does not
+currently accept. See [Haskell cost-centre flamegraphs](#haskell-cost-centre-flamegraphs)
+for the profile you *can* get, outside CodSpeed, where the frames are exact.
+
 ## What it measures
 
 **Instruction counts** come from CodSpeed's CPU-simulation instrument, per benchmark,

@@ -52,6 +52,16 @@ main = do
     (dir : _) -> pure (Just dir)
     [] -> lookupEnv "CODSPEED_PROFILE_FOLDER"
   ccsDir <- lookupEnv "CODSPEED_HS_CCS_DIR"
+  case ccsDir of
+    Just _ ->
+      hPutStrLn stderr $
+        "[codspeed] rewrite: CODSPEED_HS_CCS_DIR is set, so cost centres will be "
+          <> "merged in. This is EXPERIMENTAL: CodSpeed does not currently render "
+          <> "the authored call graph, and it changes the reported metric "
+          <> "(measured: 3.5 ms -> 4.4 ms on one benchmark). Unset it to keep the "
+          <> "symbol-level flamegraph, which is measured throughout and leaves the "
+          <> "number alone."
+    Nothing -> pure ()
   case folder of
     Nothing -> do
       hPutStrLn stderr $
