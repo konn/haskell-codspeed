@@ -247,6 +247,76 @@ jobs:
         mode: simulation
         run: ${{steps.bin.outputs.path}} --pattern 'fib.1000'
 
+  # Does DWARF give the flamegraph source lines?
+  #
+  # Frames currently carry fl=??? because the binary is built without debug
+  # info. The runner already passes --read-inline-info=yes, so Callgrind will
+  # read DWARF if it is there -- which would put Main.hs and a line number on
+  # every Haskell frame, and possibly recover inlined frames that -O2 folded
+  # away. Precise and measured, unlike the merge.
+  #
+  # -finfo-table-map comes along because it is the other half of GHC's source
+  # provenance: verified locally that it names a lazy accumulator thunk as
+  # `main_thunk_info [THUNK_STATIC] Main Ipe.hs:23:19-31`. It cannot name shared
+  # RTS code -- stg_upd_frame_info is one address for every thunk in the program,
+  # which is where 57% of this benchmark's cost sits -- so this is about
+  # enriching the frames that already resolve, not recovering the ones that do
+  # not.
+  #
+  # A probe, not a build change, because -g3 alters binary layout and the metric
+  # includes cache and memory terms. A shift here is expected and legitimate; it
+  # would mean re-baselining, which is a decision rather than a regression. This
+  # measures how big it is before anyone takes it.
+  dwarf-probe:
+    name: DWARF probe
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{env.GHC_VERSION}}
+        cabal-version: ${{env.CABAL_VERSION}}
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ${{steps.setup.outputs.cabal-store}}
+          dist-newstyle
+        key: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-${{hashFiles('cabal.project.freeze', 'haskell-codspeed.cabal')}}
+        restore-keys: codspeed-${{runner.os}}-ghc${{env.GHC_VERSION}}-
+
+    - name: Build with debug info and the info-table map
+      id: bin
+      run: |
+        cabal update
+        cabal build codspeed-hs-rewrite
+        cabal build bench:example --ghc-options='-g3 -finfo-table-map'
+        {
+          echo "path=$(cabal list-bin bench:example --ghc-options='-g3 -finfo-table-map')"
+          echo "rewrite=$(cabal list-bin codspeed-hs-rewrite)"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Confirm the binary actually carries DWARF
+      run: |
+        BIN=$(cabal list-bin bench:example --ghc-options='-g3 -finfo-table-map')
+        echo "## debug sections" | tee -a "$GITHUB_STEP_SUMMARY"
+        readelf -S "$BIN" | grep -E 'debug|Name' | head -12 | tee -a "$GITHUB_STEP_SUMMARY"
+        # If this is empty the probe tests nothing, so say so loudly.
+        readelf -S "$BIN" | grep -q debug_info \
+          || echo "::warning::no .debug_info in the binary; DWARF flags did not take"
+
+    - name: Measure
+      uses: CodSpeedHQ/action@v5
+      env:
+        CODSPEED_HS_COMPONENT: probe-dwarf
+      with:
+        mode: simulation
+        run: ${{steps.bin.outputs.path}} --pattern 'fib.1000' && ${{steps.bin.outputs.rewrite}}
+
   # Does the merged (authored) call graph render?
   #
   # Deliberately a probe rather than the shipping path. Turning the merge on in
